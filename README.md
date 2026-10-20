@@ -1,11 +1,61 @@
-# team-carlos-app
+# Team Carlos · TMC
 
-App (PWA) para atletas de **Team Carlos · TMC** — entrenamiento personalizado.
+App (PWA) de **entrenamiento personalizado** en gimnasio para los clientes de Team Carlos.
+En vivo: <https://team-carlos-app.netlify.app>
 
-- `index.html` — toda la app (login, WOD del día, RMs, timer, equipo, podio y panel del coach)
-- `assets/` — logo TMC, íconos de la app y fotos
-- `manifest.json` + `sw.js` — instalación en el celular y modo offline
+## Qué hace
 
-Accesos de demo:
-- Atletas: `atletas@teamcarlos.com` / `Exito2026*`
-- Coach: `coach@teamcarlos.com` / `Exito2026*`
+**Clientes**
+- Entran con el correo del team y su **PIN de 4 números** (cada quien ve solo su plan y sus datos).
+- **Hoy:** el día de su plan semanal (por ejemplo, Pecho + Tríceps), con cada ejercicio, series × reps, descanso, duración y RPE.
+- **Registro por serie:** anotan peso y reps, y al marcar la serie arranca solo el **descanso** (flotante, con ±15 s).
+- **Ayudas del coach:** la app muestra lo que hicieron la vez anterior, avisa cuándo **subir carga** (+2,5–5 % al completar el rango alto de reps) y sugiere una carga a partir de su RM, dejando 2 repeticiones en reserva.
+- **RMs:** historial, porcentajes, PRs, análisis del año, próximos PRs estimados y ratios de fuerza con "dónde enfocar".
+- **Timer:** descanso entre series, cronómetro de sesión e intervalos (Tabata / HIIT).
+- **Equipo y podio:** el podio premia la **constancia, no el peso**. Cuenta entrenar, completar la sesión, cumplir la semana, las rachas y los PRs. Los días de descanso del plan no rompen la racha.
+
+**Coach (Carlos)**
+- **Dashboard:** quién entrenó hoy, quién está pendiente, PRs de la semana y clientes sin plan.
+- **Clientes:** crear clientes (con PIN), renombrar, cambiar el PIN y eliminar.
+- **Plan semanal:** editor por cliente con días, secciones (movilidad, estiramientos…), ejercicios, series, reps, descanso, duración, RPE y consejos. Incluye la **plantilla TMC de 5 días (fuerza + hipertrofia)** y la opción de copiar el plan de otro cliente.
+- **Progreso:** cumplimiento semana a semana (completo / parcial / faltó), rachas y PRs del mes.
+
+## Cómo está hecha
+
+| Parte | Archivo |
+|---|---|
+| App completa (HTML + CSS + JS) | `public/index.html` |
+| Instalación en el celular | `public/manifest.json`, `public/sw.js` |
+| API (Netlify Functions) | `netlify/functions/api.mjs` |
+| Lógica de rachas y puntos (sin red) | `src/core.mjs` |
+| Sesiones y PIN | `src/auth.mjs` |
+
+Los datos se guardan en **Netlify Blobs**, sin base de datos externa ni costos adicionales.
+
+## Configuración en Netlify (obligatoria)
+
+Variables de entorno del sitio (*Site configuration → Environment variables*):
+
+| Variable | Qué es |
+|---|---|
+| `TMC_ATHLETE_PASS` | Contraseña compartida de los clientes (correo `atletas@teamcarlos.com`) |
+| `TMC_COACH_PASS` | Contraseña del coach (correo `coach@teamcarlos.com`). Debe ser **distinta** de la de clientes. |
+| `TMC_SECRET` | Texto aleatorio largo (32+ caracteres) para firmar las sesiones. Si se cambia, todos deben volver a entrar. |
+
+Las contraseñas **no** están en el código, porque este repositorio es público.
+Para cambiar una, edita la variable en Netlify y vuelve a publicar: las sesiones abiertas con la contraseña anterior se cierran solas.
+
+## Seguridad
+
+- Cada cliente solo puede leer y escribir **su** plan, sus sesiones y sus RMs. El coach ve todo.
+- **PIN:** se guarda con sal (nunca en texto plano). Tras 5 intentos fallidos se bloquea unos minutos. Si el coach asigna un PIN nuevo, se cierran las sesiones abiertas con el anterior.
+- **Puntos:** los calcula el servidor. El total de ejercicios sale del plan guardado, y un PR solo cuenta si supera el máximo registrado antes.
+- **Privacidad del podio:** los clientes ven el porcentaje de mejora de los PRs, no los kilos de los demás.
+- **Cabeceras de seguridad:** CSP, anti-iframe y nosniff, configuradas en `netlify.toml`.
+
+## Desarrollo
+
+```bash
+npm install
+netlify dev   # sirve public/ y la API en http://localhost:8888
+```

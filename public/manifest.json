@@ -1,7 +1,7 @@
 {
   "name": "Team Carlos",
   "short_name": "TMC",
-  "description": "Entrenamiento personalizado · App para atletas de Team Carlos",
+  "description": "Entrenamiento personalizado · Tu plan semanal con Team Carlos",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
