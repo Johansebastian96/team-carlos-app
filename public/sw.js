@@ -3,7 +3,7 @@
 // - El HTML va primero a la red (para que las actualizaciones lleguen de inmediato)
 //   y usa la caché solo si no hay conexión.
 // - Imágenes, íconos y fuentes: caché primero, refrescando en segundo plano.
-const CACHE_NAME = 'team-carlos-v2';
+const CACHE_NAME = 'team-carlos-v3';
 const PRECACHE_URLS = ['./', './index.html', './manifest.json', './assets/logo-mark.png'];
 
 self.addEventListener('install', (event) => {

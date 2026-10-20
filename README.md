@@ -24,7 +24,8 @@ En vivo: <https://team-carlos-app.netlify.app>
 
 | Parte | Archivo |
 |---|---|
-| App completa (HTML + CSS + JS) | `public/index.html` |
+| Pantallas y estilos | `public/index.html` |
+| Lógica de la app | `public/app.js` (al cambiarlo, actualiza `?v=` en `index.html`) |
 | Instalación en el celular | `public/manifest.json`, `public/sw.js` |
 | API (Netlify Functions) | `netlify/functions/api.mjs` |
 | Lógica de rachas y puntos (sin red) | `src/core.mjs` |
