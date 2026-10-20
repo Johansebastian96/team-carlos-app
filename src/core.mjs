@@ -47,15 +47,17 @@ export function cleanName(s) {
 export function nameKey(s) {
   return cleanName(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
 }
-const enc = (s) => encodeURIComponent(s);
-const dec = (s) => { try { return decodeURIComponent(s); } catch { return s; } };
+// Los nombres van en base64url dentro de las claves: sin '%', '/', '~' ni espacios,
+// porque el almacenamiento decodifica secuencias '%xx' en las claves.
+const enc = (s) => Buffer.from(String(s), 'utf8').toString('base64url');
+const dec = (s) => { try { return Buffer.from(String(s), 'base64url').toString('utf8'); } catch { return s; } };
 const num = (s) => { const n = Number(s); return Number.isFinite(n) ? n : 0; };
 
 // ---------------------------------------------------------------- claves
 // Cliente:   a/{id}~{genero}~{nombre}
 export function athleteKey(a) { return `a/${a.id}~${a.gender}~${enc(cleanName(a.name))}`; }
 export function parseAthleteKey(key) {
-  const m = /^a\/([a-z0-9]{4,16})~([mf])~(.+)$/.exec(key);
+  const m = /^a\/([a-z0-9]{4,16})~([mf])~([A-Za-z0-9_-]+)$/.exec(key);
   return m ? { id: m[1], gender: m[2], name: dec(m[3]) } : null;
 }
 
@@ -91,7 +93,7 @@ export function prKey(e) {
   return `p/${e.date}/${e.athleteId}/${enc(cleanName(e.name))}~${e.value}~${e.prev}~${e.unit}~${e.ts}`;
 }
 export function parsePrKey(key) {
-  const m = /^p\/(\d{4}-\d{2}-\d{2})\/([a-z0-9]{4,16})\/([^~]+)~([^~]+)~([^~]+)~(kg|lb|reps)~(\d+)$/.exec(key);
+  const m = /^p\/(\d{4}-\d{2}-\d{2})\/([a-z0-9]{4,16})\/([A-Za-z0-9_-]+)~([^~]+)~([^~]+)~(kg|lb|reps)~(\d+)$/.exec(key);
   if (!m || !isISODate(m[1])) return null;
   return { date: m[1], athleteId: m[2], name: dec(m[3]), value: num(m[4]), prev: num(m[5]), unit: m[6], ts: Number(m[7]), key };
 }

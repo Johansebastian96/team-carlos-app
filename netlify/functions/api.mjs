@@ -221,6 +221,30 @@ async function reservePinAttempt(id) {
 }
 const clearPinAttempts = async (id) => deleteKeys(await listKeys(`pa/${id}/`));
 
+// Borra todo lo de un cliente (también sirve si quedó a medias).
+async function deleteAthleteData(id) {
+  const [sKeys, pKeys, mKeys, aKeys, paKeys] = await Promise.all([
+    listKeys('s/'), listKeys('p/'), listKeys(`pd/${id}~`), listKeys(`a/${id}~`), listKeys(`pa/${id}/`),
+  ]);
+  const theirs = [
+    ...sKeys.filter((k) => parseSessionKey(k)?.athleteId === id),
+    ...pKeys.filter((k) => parsePrKey(k)?.athleteId === id),
+    ...mKeys, ...paKeys,
+    `rm/${id}`, `plan/${id}`,
+  ];
+  await deleteKeys(theirs);
+  await deleteKeys([...aKeys, `pin/${id}`]);
+  return theirs.length;
+}
+
+// Datos que quedaron sin cliente (por ejemplo, tras un error a mitad de camino).
+const ORPHAN_PREFIXES = ['pin/', 'pa/', 'rm/', 'plan/', 'pd/', 's/', 'p/'];
+function idFromKey(k) {
+  let m = /^(?:pin|rm|plan)\/([a-z0-9]{4,16})$/.exec(k) || /^pa\/([a-z0-9]{4,16})\//.exec(k) || /^pd\/([a-z0-9]{4,16})~/.exec(k);
+  if (m) return m[1];
+  return parseSessionKey(k)?.athleteId || parsePrKey(k)?.athleteId || null;
+}
+
 // ---------------------------------------------------------------- router
 export default async function handler(req) {
   try {
@@ -352,6 +376,10 @@ export default async function handler(req) {
         await clearPinAttempts(id);
         return json({ athlete, token: issueToken('athlete', id, Number(rec.v) || 0) });
       }
+      if (id && ID_RE.test(id) && !parts[2] && method === 'DELETE') {
+        requireCoach();
+        return json({ ok: true, removed: await deleteAthleteData(id) });
+      }
       if (id && ID_RE.test(id) && !parts[2]) {
         requireCoach();
         const { roster, athlete: current } = await mustExist(id);
@@ -375,23 +403,29 @@ export default async function handler(req) {
             await clearPinAttempts(id);
           }
           await db().set(key, '1');
-          await deleteKeys((await listKeys(`a/${id}~`)).filter((k) => k !== key));
+          // quita versiones anteriores del cliente (otro nombre o género), comparando por identidad
+          await deleteKeys((await listKeys(`a/${id}~`)).filter((k) => {
+            const a = parseAthleteKey(k);
+            return k !== key && (!a || a.name !== next.name || a.gender !== next.gender);
+          }));
           return json({ athlete: next });
         }
-        if (method === 'DELETE') {
-          const [sKeys, pKeys, mKeys, aKeys, paKeys] = await Promise.all([
-            listKeys('s/'), listKeys('p/'), listKeys(`pd/${id}~`), listKeys(`a/${id}~`), listKeys(`pa/${id}/`),
-          ]);
-          const theirs = [
-            ...sKeys.filter((k) => parseSessionKey(k)?.athleteId === id),
-            ...pKeys.filter((k) => parsePrKey(k)?.athleteId === id),
-            ...mKeys, ...paKeys,
-            `rm/${id}`, `plan/${id}`,
-          ];
-          await deleteKeys(theirs);
-          await deleteKeys([...aKeys, `pin/${id}`]);
-          return json({ ok: true, removed: theirs.length });
-        }
+      }
+    }
+
+    // ---- limpieza de datos huérfanos (solo coach; hay que nombrar los ids a borrar)
+    if (route === 'orphans') {
+      requireCoach();
+      const ids = new Set((await getRoster()).map((a) => a.id));
+      const keys = (await Promise.all(ORPHAN_PREFIXES.map(listKeys))).flat();
+      const orphan = {};
+      for (const k of keys) { const id = idFromKey(k); if (id && !ids.has(id)) orphan[id] = (orphan[id] || 0) + 1; }
+      if (method === 'GET') return json({ orphans: orphan });
+      if (method === 'DELETE') {
+        const asked = String(q.get('ids') || '').split(',').filter((x) => ID_RE.test(x) && orphan[x] && !ids.has(x));
+        let removed = 0;
+        for (const id of asked) removed += await deleteAthleteData(id);
+        return json({ ok: true, ids: asked, removed });
       }
     }
 
