@@ -245,7 +245,8 @@ export function computeState({ today, roster, sessions, prs, masks, planIds, meI
     if (tipo === 'entrenos') return mine.filter((s) => inMonth(s.date)).length;
     if (tipo === 'completas') return mine.filter((s) => inMonth(s.date) && isComplete(s)).length;
     if (tipo === 'nutricion') return nutriDone.filter((n) => n.athleteId === id && inMonth(n.date)).length;
-    if (tipo === 'checkins') return [...(ciWeeks.get(id) || [])].filter(inMonth).length;
+    // el check-in cuenta en el mes en que se hizo (hora de Colombia)
+    if (tipo === 'checkins') return checkins.filter((c) => c.athleteId === id && c.week <= today && inMonth(new Date(c.ts - 5 * 3600e3).toISOString().slice(0, 10))).length;
     if (tipo === 'prs') return prList.filter((p) => p.athleteId === id && inMonth(p.date)).length;
     return 0;
   };

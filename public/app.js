@@ -267,6 +267,7 @@
     restStop(); swReset(); ivReset();
     closeModal();
     clearPhotoCache();
+    if (!silent) releasePush(S.token);
     setSession({ role: null, token: null, gate: null, me: null });
     S.state = null; S.plan = undefined; S.rms = null; S.history = {}; S.drafts = {}; S.cstate = null;
     S.pe = { athleteId: '', plan: null, exists: false, dirty: false, open: {}, loading: false };
@@ -522,6 +523,7 @@
     clearTimeout(stateTimer);
     closeModal();
     clearPhotoCache();
+    releasePush(S.token);
     S.ciDraft = null; S.ciEdit = false;
     setSession({ token: null, me: null });
     if (S.gate) showWho(); else logout();
@@ -1676,7 +1678,7 @@
     $$('#podio-tabs .tab-btn').forEach((b) => b.classList.toggle('active', b.dataset.podio === S.podioTab));
     $$('#view-stats .podio-panel').forEach((p) => { const on = p.id === 'podio-panel-' + S.podioTab; p.classList.toggle('active', on); p.classList.toggle('on', on); });
     const panel = $('#podio-panel-' + S.podioTab);
-    if (!st) { panel.innerHTML = '<div class="loading-line">Cargando…</div>'; return; }
+    if (!st) { if (S.podioTab === 'equipo') renderEquipo(); else panel.innerHTML = '<div class="loading-line">Cargando…</div>'; return; }
     if (S.podioTab === 'hoy') panel.innerHTML = podioHoy(st);
     if (S.podioTab === 'semana') panel.innerHTML = podioSemana(st);
     if (S.podioTab === 'mes') panel.innerHTML = podioMes(st);
@@ -2303,12 +2305,14 @@
     return blob;
   }
   let photoTarget = null;
+  let photoBusy = false;
   $('#photo-input').addEventListener('change', async (ev) => {
     const f = ev.target.files && ev.target.files[0];
     ev.target.value = '';
     const tgt = photoTarget;
     photoTarget = null;
-    if (!f || !tgt) return;
+    if (!f || !tgt || photoBusy) return;
+    photoBusy = true;
     try {
       toast('Subiendo foto…', 'ti-upload');
       const blob = await resizeImage(f, 1080);
@@ -2316,7 +2320,7 @@
       const r = await res.json();
       tgt.done(r.body);
       toast('Foto guardada · ' + angleLabel(tgt.angle).toLowerCase(), 'ti-photo-check');
-    } catch (e) { if (!quietErr(e)) toastErr(e); }
+    } catch (e) { if (!quietErr(e)) toastErr(e); } finally { photoBusy = false; }
   });
 
   // Un solo manejador por panel; ctxFn devuelve el contexto actual (cliente o el elegido por el coach).
@@ -2327,6 +2331,7 @@
       const id = ctx.athleteId;
       const add = ev.target.closest('[data-photo-add]');
       if (add) {
+        if (photoBusy) { toast('Espera a que termine de subir la foto anterior', 'ti-hourglass'); return; }
         photoTarget = { athleteId: id, angle: add.dataset.photoAdd, done: (doc) => { if (ctxFn().athleteId === id && ctx.alive(id)) { ctxFn().set(doc); S.cmpAngle = add.dataset.photoAdd; ctxFn().render(); } } };
         $('#photo-input').click();
         return;
@@ -2922,6 +2927,17 @@
     try { const reg = await swReady(); return reg ? await reg.pushManager.getSubscription() : null; } catch (e) { return null; }
   }
   let lastPushBody = '';
+  let pushClaimed = null;
+  // Al salir o cambiar de perfil, este teléfono deja de recibir los recordatorios de esa persona.
+  function releasePush(token) {
+    if (!token || !pushSupported() || Notification.permission !== 'granted') return;
+    pushClaimed = null; lastPushBody = '';
+    currentSub().then((sub) => {
+      if (!sub) return;
+      fetch('/api/push', { method: 'DELETE', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token }, body: JSON.stringify({ endpoint: sub.endpoint }) })
+        .catch(() => {}).then(() => sub.unsubscribe()).catch(() => {});
+    });
+  }
   function pushCardHtml(role) {
     return '<div class="push-card" data-push-card="' + role + '"><div class="t"><i class="ti ti-bell" aria-hidden="true"></i>RECORDATORIOS</div>' + (lastPushBody || '<div class="d">Cargando…</div>') + '</div>';
   }
@@ -2941,6 +2957,11 @@
       body = '<div class="d">Bloqueaste las notificaciones de Team Carlos. Actívalas en los ajustes del navegador y vuelve aquí.</div>';
     } else {
       const sub = Notification.permission === 'granted' ? await currentSub() : null;
+      const who = S.role + ':' + (S.me ? S.me.id : '');
+      if (sub && pushClaimed !== who) {
+        pushClaimed = who;
+        api('POST', 'push', { subscription: sub.toJSON() }).catch(() => { pushClaimed = null; });
+      }
       body = sub
         ? '<div class="d">Activados en este teléfono ✓ ' + what + '</div><div class="row-actions"><button type="button" class="btn-ghost btn-sm" data-push="test">PROBAR</button><button type="button" class="btn-ghost btn-sm" data-push="off">DESACTIVAR</button></div>'
         : '<div class="d">' + what + '</div><div class="row-actions"><button type="button" class="btn-accent btn-sm" data-push="on"><i class="ti ti-bell-ringing" aria-hidden="true"></i>ACTIVAR RECORDATORIOS</button></div>';
@@ -4082,7 +4103,8 @@
     let html = '<div class="week-nav" style="padding:0 0 14px;"><button type="button" class="icon-btn" data-ciwk="-1" aria-label="Semana anterior"' + (S.segCiOffset <= -11 ? ' disabled' : '') + '><i class="ti ti-chevron-left" aria-hidden="true"></i></button>' +
       '<div class="wn-label">' + (S.segCiOffset === 0 ? 'ESTA SEMANA · ' : S.segCiOffset === -1 ? 'SEMANA PASADA · ' : '') + fmtDay(wk) + ' – ' + fmtDay(addDays(wk, 6)) + '</div>' +
       '<button type="button" class="icon-btn" data-ciwk="1" aria-label="Semana siguiente"' + (S.segCiOffset >= 0 ? ' disabled' : '') + '><i class="ti ti-chevron-right" aria-hidden="true"></i></button></div>';
-    if (!st || !S.segCi || S.segCi.week !== wk) {
+    if (!st) { el.innerHTML = html + '<div class="loading-line">Cargando…</div>'; return; }
+    if (!S.segCi || S.segCi.week !== wk) {
       el.innerHTML = html + '<div class="loading-line">Cargando…</div>';
       loadOnce('segci' + wk, () => api('GET', 'checkins?week=' + wk)).then((r) => {
         S.segCi = { week: wk, list: r.checkins };
@@ -4244,7 +4266,7 @@
     if (act === 'toggle') { S.payOpen = S.payOpen === id ? null : id; renderPagos(); return; }
     if (act === 'registrar') {
       const form = $('form[data-form="pay"]', row);
-      const valor = parseNum(form.elements.valor.value);
+      const valor = pesos(form.elements.valor.value);
       if (!valor) { toast('Escribe el valor de la mensualidad', 'ti-alert-triangle', true); return; }
       b.disabled = true;
       try {
@@ -4266,9 +4288,10 @@
       } catch (e) { toastErr(e); }
     }
   });
+  const pesos = (v) => parseInt(String(v || '').replace(/[^\d]/g, ''), 10) || 0;
   function payPayload(form) {
     return {
-      plan: form.elements.plan.value.trim(), valor: parseNum(form.elements.valor.value) || 0, ciclo: parseInt(form.elements.ciclo.value, 10) || 30,
+      plan: form.elements.plan.value.trim(), valor: pesos(form.elements.valor.value), ciclo: parseInt(form.elements.ciclo.value, 10) || 30,
       proximoPago: form.elements.proximoPago.value || null, telefono: form.elements.telefono.value.trim(), nota: form.elements.nota.value.trim(),
     };
   }

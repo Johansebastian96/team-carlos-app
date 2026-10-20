@@ -255,8 +255,10 @@ function idFromKey(k) {
 
 // ---------------------------------------------------------------- videos de técnica
 function safeUrl(v) {
-  const t = str(v, 300);
+  let t = str(v, 300);
   if (!t) return '';
+  // "youtu.be/abc" o "www.youtube.com/…" sin https:// también sirven
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(t) && /^[\w-]+(\.[\w-]+)+(\/|$)/.test(t)) t = 'https://' + t;
   try {
     const u = new URL(t);
     return u.protocol === 'https:' ? u.toString() : '';
@@ -339,7 +341,7 @@ function sanitizePay(b, prev) {
     ciclo: intIn(b?.ciclo, 1, 365, prev?.ciclo || 30),
     proximoPago: isISODate(b?.proximoPago) ? b.proximoPago : prev?.proximoPago || null,
     telefono: str(b?.telefono, 20).replace(/[^\d+]/g, '') || (b?.telefono === '' ? '' : prev?.telefono || ''),
-    nota: str(b?.nota, 200),
+    nota: b?.nota !== undefined ? str(b.nota, 200) : prev?.nota || '',
     historial: Array.isArray(prev?.historial) ? prev.historial.slice(-60) : [],
     updatedAt: Date.now(),
   };
@@ -453,6 +455,9 @@ export default async function handler(req) {
       if (!isCoach) {
         state.mes.feed = state.mes.feed.map((p) => ({ date: p.date, athleteId: p.athleteId, name: p.name, unit: p.unit, pct: p.pct, ts: p.ts }));
         state.mes.ranking = state.mes.ranking.map((r) => ({ athleteId: r.athleteId, prs: r.prs }));
+        // de los demás solo se ve lo que muestra el podio
+        state.alltime = state.alltime.map((x) => (x.athleteId === aid ? x
+          : { athleteId: x.athleteId, points: x.points, days: x.days, streak: x.streak, prs: x.prs, weeks: x.weeks }));
       }
       return json({ ...state, role, aid: isCoach ? null : aid });
     }
@@ -918,9 +923,13 @@ export default async function handler(req) {
         if (!/^https:\/\//.test(endpoint) || !sub.keys || typeof sub.keys.p256dh !== 'string' || typeof sub.keys.auth !== 'string') {
           throw new HttpError(400, 'BAD_SUBSCRIPTION');
         }
+        const mine = subKey(who, endpoint);
+        // un teléfono recibe los recordatorios de una sola persona: la que lo está usando ahora
+        const hash = mine.split('/')[2];
+        await deleteKeys((await listKeys('push/')).filter((k) => k !== mine && k.split('/')[2] === hash));
         const existing = await listKeys(`push/${who}/`);
-        if (existing.length >= 6) await deleteKeys(existing.slice(0, existing.length - 5));
-        await db().setJSON(subKey(who, endpoint), { endpoint, keys: { p256dh: str(sub.keys.p256dh, 200), auth: str(sub.keys.auth, 100) }, ts: Date.now() });
+        if (existing.length >= 6) await deleteKeys(existing.filter((k) => k !== mine).slice(0, existing.length - 5));
+        await db().setJSON(mine, { endpoint, keys: { p256dh: str(sub.keys.p256dh, 200), auth: str(sub.keys.auth, 100) }, ts: Date.now() });
         return json({ ok: true }, 201);
       }
       if (method === 'DELETE') {
