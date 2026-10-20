@@ -14,8 +14,41 @@ export const POINTS = {
   complete: 15,   // completar todos los ejercicios del día
   pr: 25,         // superar un RM
   week: 50,       // cumplir todos los días del plan en la semana
+  nutri: 5,       // cumplir todas las comidas y el agua del día
+  checkin: 20,    // hacer el check-in de la semana
+  reto: 100,      // cumplir el reto del mes
   streak: [[5, 30], [10, 75], [20, 200]], // bonos al alcanzar la racha
 };
+
+export const RETO_TIPOS = {
+  entrenos: 'días entrenados',
+  completas: 'sesiones completas',
+  nutricion: 'días de nutrición completa',
+  checkins: 'check-ins',
+  prs: 'PRs',
+};
+
+// Logros: se ganan solos con la constancia.
+export const BADGES = [
+  { id: 'entreno-1', titulo: 'Primer entreno', icon: 'ti-flame', stat: 'days', target: 1 },
+  { id: 'entreno-10', titulo: '10 entrenos', icon: 'ti-flame', stat: 'days', target: 10 },
+  { id: 'entreno-25', titulo: '25 entrenos', icon: 'ti-flame', stat: 'days', target: 25 },
+  { id: 'entreno-50', titulo: '50 entrenos', icon: 'ti-flame', stat: 'days', target: 50 },
+  { id: 'entreno-100', titulo: '100 entrenos', icon: 'ti-crown', stat: 'days', target: 100 },
+  { id: 'racha-5', titulo: 'Racha de 5', icon: 'ti-bolt', stat: 'bestStreak', target: 5 },
+  { id: 'racha-10', titulo: 'Racha de 10', icon: 'ti-bolt', stat: 'bestStreak', target: 10 },
+  { id: 'racha-20', titulo: 'Racha de 20', icon: 'ti-bolt', stat: 'bestStreak', target: 20 },
+  { id: 'semana-1', titulo: 'Semana perfecta', icon: 'ti-calendar-check', stat: 'weeks', target: 1 },
+  { id: 'semana-4', titulo: '4 semanas perfectas', icon: 'ti-calendar-check', stat: 'weeks', target: 4 },
+  { id: 'completa-10', titulo: '10 sesiones completas', icon: 'ti-circle-check', stat: 'complete', target: 10 },
+  { id: 'pr-1', titulo: 'Primer PR', icon: 'ti-trophy', stat: 'prs', target: 1 },
+  { id: 'pr-5', titulo: '5 PRs', icon: 'ti-trophy', stat: 'prs', target: 5 },
+  { id: 'pr-10', titulo: '10 PRs', icon: 'ti-trophy', stat: 'prs', target: 10 },
+  { id: 'nutri-7', titulo: '7 días comiendo al 100%', icon: 'ti-salad', stat: 'nutriDays', target: 7 },
+  { id: 'nutri-30', titulo: '30 días comiendo al 100%', icon: 'ti-salad', stat: 'nutriDays', target: 30 },
+  { id: 'checkin-4', titulo: '4 check-ins', icon: 'ti-clipboard-check', stat: 'checkins', target: 4 },
+  { id: 'reto-1', titulo: 'Reto del mes cumplido', icon: 'ti-medal', stat: 'retos', target: 1 },
+];
 
 // ---------------------------------------------------------------- fechas (ISO, sin zona)
 export function isISODate(s) {
@@ -98,6 +131,30 @@ export function parsePrKey(key) {
   return { date: m[1], athleteId: m[2], name: dec(m[3]), value: num(m[4]), prev: num(m[5]), unit: m[6], ts: Number(m[7]), key };
 }
 
+// Nutrición del día: n/{fecha}/{id}~{comidas hechas}~{comidas del plan}~{vasos}~{meta de vasos}~{ts}
+export function nutriPrefix(date, athleteId) { return athleteId ? `n/${date}/${athleteId}~` : `n/${date}/`; }
+export function nutriKey(n) { return `${nutriPrefix(n.date, n.athleteId)}${n.done}~${n.total}~${n.vasos}~${n.meta}~${n.ts}`; }
+export function parseNutriKey(key) {
+  const m = /^n\/(\d{4}-\d{2}-\d{2})\/([a-z0-9]{4,16})~(\d+)~(\d+)~(\d+)~(\d+)~(\d+)$/.exec(key);
+  if (!m || !isISODate(m[1])) return null;
+  return { date: m[1], athleteId: m[2], done: +m[3], total: +m[4], vasos: +m[5], meta: +m[6], ts: +m[7], key };
+}
+export const nutriComplete = (n) => n.total > 0 && n.done >= n.total && n.vasos >= n.meta;
+
+// Check-in semanal: ci/{lunes}/{id}~{ts}
+export function checkinKey(week, athleteId, ts) { return `ci/${week}/${athleteId}~${ts}`; }
+export function parseCheckinKey(key) {
+  const m = /^ci\/(\d{4}-\d{2}-\d{2})\/([a-z0-9]{4,16})~(\d+)$/.exec(key);
+  return m && isISODate(m[1]) ? { week: m[1], athleteId: m[2], ts: +m[3], key } : null;
+}
+
+// Reto del mes: rt/{aaaa-mm}~{tipo}~{meta}
+export function retoKey(month, tipo, meta) { return `rt/${month}~${tipo}~${meta}`; }
+export function parseRetoKey(key) {
+  const m = /^rt\/(\d{4}-\d{2})~([a-z]+)~(\d+)$/.exec(key);
+  return m && RETO_TIPOS[m[2]] ? { month: m[1], tipo: m[2], meta: +m[3], key } : null;
+}
+
 // Si hay dos registros del mismo día para el mismo cliente, gana el más reciente.
 export function dedupeSessions(list) {
   const best = new Map();
@@ -150,7 +207,7 @@ export function completeWeeks(days, maskFor, today) {
 // ---------------------------------------------------------------- estado agregado
 // masks: { [athleteId]: [{ mask, from }] } (historial de días del plan)
 // planIds: ids de clientes que tienen plan publicado hoy
-export function computeState({ today, roster, sessions, prs, masks, planIds, meId, withHistory }) {
+export function computeState({ today, roster, sessions, prs, masks, planIds, meId, withHistory, nutri = [], checkins = [], retos = [], retoInfo = null }) {
   const ids = new Set(roster.map((a) => a.id));
   const hist = {};
   for (const a of roster) {
@@ -163,6 +220,15 @@ export function computeState({ today, roster, sessions, prs, masks, planIds, meI
   const ses = dedupeSessions(sessions).filter((s) => ids.has(s.athleteId) && s.date <= today && s.sets > 0);
   const prList = prs.filter((p) => ids.has(p.athleteId) && p.date <= today);
   const isComplete = (s) => s.total > 0 && s.done >= s.total;
+  const nutriList = dedupeSessions(nutri).filter((n) => ids.has(n.athleteId) && n.date <= today);
+  const nutriDone = nutriList.filter(nutriComplete);
+  const ciWeeks = new Map(); // atleta -> Set(semanas)
+  for (const c of checkins) {
+    if (!ids.has(c.athleteId) || c.week > today) continue;
+    if (!ciWeeks.has(c.athleteId)) ciWeeks.set(c.athleteId, new Set());
+    ciWeeks.get(c.athleteId).add(c.week);
+  }
+  const retoList = retos.filter((r) => r.month <= today.slice(0, 7));
 
   const byAthlete = new Map(roster.map((a) => [a.id, []]));
   for (const s of ses) byAthlete.get(s.athleteId).push(s);
@@ -171,6 +237,18 @@ export function computeState({ today, roster, sessions, prs, masks, planIds, meI
   const wkEnd = addDays(wkStart, 6);
   const inWeek = (d) => d >= wkStart && d <= wkEnd;
   const month = today.slice(0, 7);
+
+  // valor de un cliente para un tipo de reto en un mes
+  const retoValue = (id, tipo, month) => {
+    const inMonth = (d) => d.startsWith(month);
+    const mine = byAthlete.get(id) || [];
+    if (tipo === 'entrenos') return mine.filter((s) => inMonth(s.date)).length;
+    if (tipo === 'completas') return mine.filter((s) => inMonth(s.date) && isComplete(s)).length;
+    if (tipo === 'nutricion') return nutriDone.filter((n) => n.athleteId === id && inMonth(n.date)).length;
+    if (tipo === 'checkins') return [...(ciWeeks.get(id) || [])].filter(inMonth).length;
+    if (tipo === 'prs') return prList.filter((p) => p.athleteId === id && inMonth(p.date)).length;
+    return 0;
+  };
 
   const stats = new Map();
   for (const a of roster) {
@@ -181,9 +259,14 @@ export function computeState({ today, roster, sessions, prs, masks, planIds, meI
     const complete = mine.filter(isComplete).length;
     const prCount = prList.filter((p) => p.athleteId === a.id).length;
     const weeks = completeWeeks(days, mf, today);
-    const points = days.size * POINTS.day + complete * POINTS.complete + prCount * POINTS.pr + weeks * POINTS.week + st.bonus;
+    const nutriDays = nutriDone.filter((n) => n.athleteId === a.id).length;
+    const checkinCount = (ciWeeks.get(a.id) || new Set()).size;
+    const retosDone = retoList.filter((r) => retoValue(a.id, r.tipo, r.month) >= r.meta).length;
+    const points = days.size * POINTS.day + complete * POINTS.complete + prCount * POINTS.pr + weeks * POINTS.week + st.bonus
+      + nutriDays * POINTS.nutri + checkinCount * POINTS.checkin + retosDone * POINTS.reto;
+    const badgeCount = BADGES.filter((b) => ({ days: days.size, bestStreak: st.best, weeks, complete, prs: prCount, nutriDays, checkins: checkinCount, retos: retosDone })[b.stat] >= b.target).length;
     stats.set(a.id, {
-      athleteId: a.id, days: days.size, complete, prs: prCount, weeks,
+      athleteId: a.id, days: days.size, complete, prs: prCount, weeks, nutriDays, checkins: checkinCount, retos: retosDone, badges: badgeCount,
       streak: st.current, bestStreak: st.best, bonus: st.bonus, points,
       weekDays: mine.filter((s) => inWeek(s.date)).length,
       weekPlanned: plannedDays(mf(today)),
@@ -230,12 +313,27 @@ export function computeState({ today, roster, sessions, prs, masks, planIds, meI
   const alltime = [...stats.values()].sort((x, y) => y.points - x.points || y.days - x.days
     || nameCmp(roster, x.athleteId, y.athleteId));
 
+  // ---- reto del mes en curso
+  let reto = null;
+  const cur = retoList.find((r) => r.month === month);
+  if (cur) {
+    const progreso = roster.map((a) => {
+      const value = retoValue(a.id, cur.tipo, month);
+      return { athleteId: a.id, value, done: value >= cur.meta };
+    }).sort((x, y) => y.value - x.value || nameCmp(roster, x.athleteId, y.athleteId));
+    reto = { month, tipo: cur.tipo, meta: cur.meta, unidad: RETO_TIPOS[cur.tipo], ...(retoInfo || {}), progreso };
+  }
+
   // ---- yo
   let me = null;
   if (meId && stats.has(meId)) {
     const pos = hoy.findIndex((h) => h.athleteId === meId);
+    const sm = stats.get(meId);
     me = {
-      ...stats.get(meId),
+      ...sm,
+      badgeList: BADGES.map((b) => ({ ...b, value: sm[b.stat] || 0, earned: (sm[b.stat] || 0) >= b.target })),
+      checkinThisWeek: (ciWeeks.get(meId) || new Set()).has(wkStart),
+      nutriToday: nutriList.find((n) => n.athleteId === meId && n.date === today) || null,
       mask: maskFn(meId)(today),
       prsMonth: monthPrs.filter((p) => p.athleteId === meId).length,
       rankAll: alltime.findIndex((x) => x.athleteId === meId) + 1,
@@ -252,6 +350,7 @@ export function computeState({ today, roster, sessions, prs, masks, planIds, meI
     semana,
     mes: { ranking: mes, feed },
     alltime,
+    reto,
     me,
     trainedToday: hoy.map((h) => h.athleteId),
   };
@@ -274,6 +373,8 @@ export function computeState({ today, roster, sessions, prs, masks, planIds, meI
       weekMasks,
       withPlan: roster.filter((a) => withPlan.has(a.id)).map((a) => a.id),
       scheduledToday: roster.filter((a) => withPlan.has(a.id) && maskFn(a.id)(today)[dow] === '1').map((a) => a.id),
+      checkinsWeek: roster.filter((a) => (ciWeeks.get(a.id) || new Set()).has(wkStart)).map((a) => a.id),
+      nutriToday: nutriList.filter((n) => n.date === today).map(({ key, ...n }) => n),
       prsWeek: prList.filter((p) => inWeek(p.date)).length,
       history,
     };

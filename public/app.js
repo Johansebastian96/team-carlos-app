@@ -265,14 +265,20 @@
     clearTimeout(stateTimer);
     toastEl.classList.remove('show');
     restStop(); swReset(); ivReset();
+    closeModal();
+    clearPhotoCache();
     setSession({ role: null, token: null, gate: null, me: null });
     S.state = null; S.plan = undefined; S.rms = null; S.history = {}; S.drafts = {}; S.cstate = null;
     S.pe = { athleteId: '', plan: null, exists: false, dirty: false, open: {}, loading: false };
+    S.ne = { athleteId: '', nutri: null, exists: false, dirty: false, loading: false, failed: '' };
+    S.pagos = null; S.segBody = null; S.segBodyFor = null; S.segClient = ''; S.segCi = null; S.feedback = null; S.payOpen = null;
+    S.retoEdit = false; S.retoDraft = null;
+    S.nutri = undefined; S.body = undefined; S.checkins = undefined; S.pay = null; S.ciDraft = null; S.ciEdit = false;
     if (!silent) loginError.classList.remove('show');
     showOnly('splash');
   }
   logoutBtn.addEventListener('click', () => {
-    if (S.role === 'coach' && S.pe.dirty && !window.confirm('Tienes cambios sin guardar en un plan. ¿Salir de todos modos?')) return;
+    if (S.role === 'coach' && (S.pe.dirty || S.ne.dirty) && !window.confirm('Tienes cambios sin guardar en un plan. ¿Salir de todos modos?')) return;
     logout();
   });
 
@@ -413,6 +419,8 @@
     showOnly('app');
     S.sel = today(); S.day = today();
     S.plan = undefined; S.history = {}; S.drafts = {}; S.rms = null; S.state = null; S.openEx = null;
+    S.nutri = undefined; S.nutriLog = null; S.nutriDraft = { meals: {}, vasos: 0 }; S.pay = null;
+    S.body = undefined; S.checkins = undefined; S.ciDraft = null; S.ciEdit = false;
     $('#me-avatar').textContent = initials(S.me.name);
     switchView('home');
     await refreshAthlete();
@@ -420,10 +428,11 @@
   async function refreshAthlete() {
     if (!S.me) return;
     const id = S.me.id;
-    const results = await Promise.allSettled([loadState(), loadPlan(), loadHistory(), loadRms()]);
+    const results = await Promise.allSettled([loadState(), loadPlan(), loadHistory(), loadRms(), loadNutri(), loadPay()]);
     if (!sameMe(id)) return;
     if (S.state && S.state.me === null) { profileGone(); return; }
     if (S.plan === undefined) S.plan = null;
+    if (S.nutri === undefined) S.nutri = null;
     if (!S.rms) S.rms = rmDefaultDoc();
     renderAthleteAll();
     const fail = results.find((r) => r.status === 'rejected' && r.reason && !r.reason.stale && r.reason.code !== 'NO_SESSION');
@@ -432,9 +441,11 @@
   function renderAthleteAll() {
     renderHome();
     if (S.view === 'rms') renderRms();
-    if (S.view === 'atletas') renderEquipo();
+    if (S.view === 'nutri') renderNutri();
+    if (S.view === 'progreso') renderProgress();
     if (S.view === 'stats') renderPodio();
     if (S.view === 'timer') renderTimer();
+    applyDeepLink();
   }
 
   let stateTimer = null;
@@ -445,8 +456,9 @@
         await loadState();
         if (S.state.me === null) return profileGone();
         renderStats();
-        if (S.view === 'atletas') renderEquipo();
+        renderHomeAlerts();
         if (S.view === 'stats') renderPodio();
+        if (S.view === 'progreso' && S.progTab === 'logros') renderProgress();
       } catch (e) { /* se reintenta en el próximo ciclo */ }
     }, 1500);
   }
@@ -466,13 +478,12 @@
       }
     }
     try {
-      if (S.role === 'athlete' && S.me && app.classList.contains('active') && ['atletas', 'stats'].indexOf(S.view) !== -1) {
+      if (S.role === 'athlete' && S.me && app.classList.contains('active') && S.view === 'stats') {
         await loadState();
         if (S.state.me === null) return profileGone();
         renderStats();
-        if (S.view === 'atletas') renderEquipo();
-        if (S.view === 'stats') renderPodio();
-      } else if (S.role === 'coach' && coach.classList.contains('active') && (S.cview === 'dashboard' || S.cview === 'progreso')) {
+        renderPodio();
+      } else if (S.role === 'coach' && coach.classList.contains('active') && (S.cview === 'dashboard' || (S.cview === 'seguimiento' && S.segTab === 'cumplimiento'))) {
         await loadCoachState();
         renderCoachView();
       }
@@ -488,6 +499,8 @@
   /* ================================================================ navegación del cliente */
   $$('#app .nav-item').forEach((btn) => btn.addEventListener('click', () => switchView(btn.dataset.view)));
   function switchView(v) {
+    if (v === 'timer' && S.view !== 'timer') S.prevView = S.view;
+    closeModal();
     S.view = v;
     $$('#app .nav-item').forEach((b) => b.classList.toggle('active', b.dataset.view === v));
     $$('#app main.view').forEach((el) => {
@@ -498,7 +511,8 @@
     if (v === 'home') renderHome();
     if (v === 'rms') renderRms();
     if (v === 'timer') renderTimer();
-    if (v === 'atletas') renderEquipo();
+    if (v === 'nutri') renderNutri();
+    if (v === 'progreso') renderProgress();
     if (v === 'stats') renderPodio();
     updateRestFloat();
     window.scrollTo(0, 0);
@@ -506,6 +520,9 @@
   $('#me-avatar').addEventListener('click', () => {
     flushSaves();
     clearTimeout(stateTimer);
+    closeModal();
+    clearPhotoCache();
+    S.ciDraft = null; S.ciEdit = false;
     setSession({ token: null, me: null });
     if (S.gate) showWho(); else logout();
   });
@@ -564,6 +581,7 @@
     if (!S.me) return;
     renderHero();
     renderStats();
+    renderHomeAlerts();
     renderStrip();
     renderDay();
     renderPlanInfo();
@@ -624,7 +642,8 @@
       if (sess && sess.finished) {
         html += '<div class="finished-card"><i class="ti ti-circle-check" aria-hidden="true"></i><div class="fc-main">' +
           '<div class="fc-title">Entrenamiento terminado</div><div class="fc-sub">' + doneN + '/' + exs.length + ' ejercicios · ' + okSets(sess) + ' series</div></div>' +
-          '<button type="button" data-act="unfinish">Deshacer</button></div>';
+          '<button type="button" data-act="unfinish">Deshacer</button></div>' +
+          '<button type="button" class="btn-outline" data-act="share-session" style="margin-top:10px;"><i class="ti ti-brand-instagram" aria-hidden="true"></i> COMPARTIR MI ENTRENO</button>';
       } else if (okSets(sess) > 0) {
         html += '<button type="button" class="publish-btn" data-act="finish"><i class="ti ti-flag-check" aria-hidden="true"></i><span>TERMINAR ENTRENAMIENTO</span></button>';
       }
@@ -727,6 +746,11 @@
     const rmh = libre ? null : rmHint(e);
     if (rmh) hints.push('<div class="hint rm"><i class="ti ti-target" aria-hidden="true"></i><span>CARGA SUGERIDA ' + esc(rmh.text) + ' <span class="muted">· ' + rmh.pct + ' DE TU RM (' + esc(rmh.rm) + ')</span></span></div>');
 
+    const rec = exRecord(iso, e);
+    const tools = [];
+    if (e.video) tools.push('<a class="tool-link" href="' + esc(e.video) + '" target="_blank" rel="noopener noreferrer"><i class="ti ti-player-play" aria-hidden="true"></i>Ver técnica</a>');
+    if (e.alt) hints.push('<div class="hint"><i class="ti ti-replace" aria-hidden="true"></i><span>¿MÁQUINA OCUPADA? ALTERNATIVA: ' + esc(e.alt) + '</span></div>');
+
     const range = repRange(e.reps);
     let rows = '';
     sets.forEach((s, i) => {
@@ -745,12 +769,15 @@
       }
     });
     const rest = restSeconds(e.descanso);
-    return '<div class="ex-body">' + (hints.length ? '<div class="ex-hints">' + hints.join('') + '</div>' : '') + rows +
+    return '<div class="ex-body">' + (tools.length ? '<div class="ex-tools">' + tools.join('') + '</div>' : '') +
+      (hints.length ? '<div class="ex-hints">' + hints.join('') + '</div>' : '') + rows +
       '<div class="ex-actions">' +
         '<button type="button" data-act="set-add"><i class="ti ti-plus" aria-hidden="true"></i>Serie</button>' +
         (sets.length > 1 ? '<button type="button" data-act="set-del"><i class="ti ti-minus" aria-hidden="true"></i>Serie</button>' : '') +
         (rest ? '<button type="button" class="rest-btn" data-act="rest"><i class="ti ti-clock-play" aria-hidden="true"></i>' + fmtClock(rest) + '</button>' : '') +
-      '</div></div>';
+      '</div>' +
+      '<div class="ex-note"><input type="text" data-note maxlength="200" value="' + esc((rec && rec.nota) || '') + '" placeholder="Nota para Carlos (ej: me molestó el hombro)" aria-label="Nota para el coach"></div>' +
+      '</div>';
   }
 
   function findExercise(id) {
@@ -788,6 +815,7 @@
     if (!btn) return;
     const act = btn.dataset.act;
     const iso = S.sel;
+    if (act === 'share-session') { shareSession(iso); return; }
     if (act === 'finish' || act === 'unfinish') {
       const d = ensureDraft(iso);
       d.finished = act === 'finish';
@@ -857,6 +885,14 @@
   });
   dayContent.addEventListener('input', (ev) => {
     const input = ev.target;
+    if (input.hasAttribute('data-note')) {
+      const item = input.closest('.ex-item');
+      const e = item && findExercise(item.dataset.ex);
+      if (!e || S.sel > today()) return;
+      ensureEx(ensureDraft(S.sel), e).nota = input.value.slice(0, 200);
+      scheduleSave(S.sel, 1200);
+      return;
+    }
     if (!input.dataset.f) return;
     const item = input.closest('.ex-item');
     const e = item && findExercise(item.dataset.ex);
@@ -900,6 +936,7 @@
   }
   function flushSaves() {
     Object.keys(saveTimers).forEach((iso) => { clearTimeout(saveTimers[iso]); delete saveTimers[iso]; saveSession(sessionSnapshot(iso)); });
+    flushNutri();
   }
   async function saveSession(snap) {
     if (!snap) return;
@@ -955,8 +992,11 @@
       html += '<div class="tip-card"><div class="tip-card-title"><i class="ti ' + TIP_ICONS[i % TIP_ICONS.length] + '" aria-hidden="true"></i>' + esc(c.titulo || 'CONSEJOS') + '</div><ul>' +
         c.items.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul></div>';
     });
+    html += '<button type="button" class="btn-outline" id="plan-image-btn"><i class="ti ti-download" aria-hidden="true"></i> DESCARGAR MI PLAN (IMAGEN)</button>';
+    html += pushCardHtml('athlete');
     html += '<div class="motto">DISCIPLINA <b>+</b> CONSTANCIA <b>=</b> RESULTADOS</div>';
     el.innerHTML = html;
+    refreshPushCards();
   }
 
   /* ================================================================ RMs */
@@ -1060,6 +1100,7 @@
         '<button class="rm-save-btn" type="button" data-act="rm-save">GUARDAR</button></div>' +
         '<div class="rm-section"><label class="form-label">HISTORIAL</label><div class="rm-bar-chart">' + bars + '</div><div class="rm-history-list">' + list + '</div></div>' +
         '<div class="rm-tip"><div class="rm-tip-label"><i class="ti ti-bulb" aria-hidden="true"></i>TIP DE PROGRESIÓN</div><div class="rm-tip-text">' + esc(tip) + '</div></div>' +
+        (h[h.length - 1].isPR ? '<button type="button" class="btn-outline" data-act="rm-share" style="margin-bottom:10px;"><i class="ti ti-brand-instagram" aria-hidden="true"></i> COMPARTIR MI PR</button>' : '') +
         '<div class="rm-card-actions"><button type="button" class="rm-remove-btn" data-act="rm-remove">Quitar de mi lista</button></div>' +
       '</div></div>';
   }
@@ -1086,6 +1127,7 @@
     if (!meta) return;
     const act = el.dataset.act;
     if (act === 'rm-toggle') { S.rmOpen = S.rmOpen === name ? null : name; renderRms(); return; }
+    if (act === 'rm-share') { sharePr(meta); return; }
     if (act === 'rm-unit') {
       const b = ev.target.closest('button');
       if (!b) return;
@@ -1639,6 +1681,8 @@
     if (S.podioTab === 'semana') panel.innerHTML = podioSemana(st);
     if (S.podioTab === 'mes') panel.innerHTML = podioMes(st);
     if (S.podioTab === 'alltime') panel.innerHTML = podioAll(st);
+    if (S.podioTab === 'reto') panel.innerHTML = podioReto(st);
+    if (S.podioTab === 'equipo') renderEquipo();
     animateBars(panel);
     $('#podio-updated').textContent = 'SE ACTUALIZA SOLO · ' + agoTs(S.stateAt);
   }
@@ -1726,6 +1770,9 @@
       ['COMPLETAR TODA TU SESIÓN', '+15', ''],
       ['ROMPER UN RM', '+25', 'pv-green'],
       ['CUMPLIR TODOS LOS DÍAS DE TU SEMANA', '+50', 'pv-accent'],
+      ['DÍA DE NUTRICIÓN COMPLETO', '+5', ''],
+      ['CHECK-IN SEMANAL', '+20', ''],
+      ['CUMPLIR EL RETO DEL MES', '+100', 'pv-accent'],
       ['RACHA 5 DÍAS', '+30 BONUS', 'pv-gold'],
       ['RACHA 10 DÍAS', '+75 BONUS', 'pv-gold'],
       ['RACHA 20 DÍAS', '+200 BONUS', 'pv-gold'],
@@ -1748,6 +1795,1196 @@
     renderPodio();
   });
 
+  /* ================================================================ utilidades v3 */
+  const money = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('es-CO');
+  const inDays = (n) => (n === 0 ? 'HOY' : n === 1 ? 'MAÑANA' : n === -1 ? 'AYER' : n > 0 ? 'EN ' + n + ' DÍAS' : 'HACE ' + (-n) + ' DÍAS');
+  const inflight = {};
+  function loadOnce(k, fn) {
+    if (!inflight[k]) inflight[k] = fn().finally(() => { delete inflight[k]; });
+    return inflight[k];
+  }
+  const quietErr = (e) => !e || e.stale || ['NO_SESSION', 'PROFILE_GONE', 'PIN_CHANGED'].indexOf(e.code) !== -1;
+
+  // Para fotos y archivos (la API normal solo maneja JSON)
+  async function apiBlob(method, path, blob, type) {
+    let res;
+    try {
+      res = await fetch('/api/' + path, {
+        method,
+        headers: Object.assign(type ? { 'content-type': type } : {}, S.token ? { authorization: 'Bearer ' + S.token } : {}),
+        body: blob || undefined,
+        cache: 'no-store',
+      });
+    } catch (e) {
+      const err = new Error('Sin conexión. Revisa tu internet.');
+      err.offline = true;
+      throw err;
+    }
+    if (!res.ok) {
+      let data = {};
+      try { data = await res.json(); } catch (e) { /* sin cuerpo */ }
+      const err = new Error(data.message || ('Error ' + res.status));
+      err.status = res.status; err.code = data.error;
+      throw err;
+    }
+    return res;
+  }
+
+  // ---- ventana emergente
+  const modal = $('#modal');
+  let modalOpts = null;
+  function openModal(title, html, opts) {
+    if (modalOpts && modalOpts.cleanup) { try { modalOpts.cleanup(); } catch (e) { /* nada */ } }
+    modalOpts = opts || {};
+    $('#modal-title').textContent = title;
+    $('#modal-body').innerHTML = html;
+    modal.classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+  }
+  function closeModal() {
+    if (modal.classList.contains('hidden')) return;
+    modal.classList.add('hidden');
+    $('#modal-body').innerHTML = '';
+    document.body.style.overflow = '';
+    if (modalOpts && modalOpts.cleanup) { try { modalOpts.cleanup(); } catch (e) { /* nada */ } }
+    modalOpts = null;
+  }
+  $('#modal-close').addEventListener('click', closeModal);
+  modal.addEventListener('click', (ev) => {
+    if (ev.target === modal) { closeModal(); return; }
+    if (modalOpts && modalOpts.onClick) modalOpts.onClick(ev);
+  });
+  document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') closeModal(); });
+
+  // ---- enlaces directos (?v=checkin, ?v=pagos…) desde las notificaciones
+  let deepLink = null;
+  try { deepLink = new URLSearchParams(location.search).get('v'); } catch (e) { /* nada */ }
+  function applyDeepLink() {
+    if (!deepLink) return;
+    const v = deepLink;
+    const ok = S.role === 'athlete' ? ['checkin', 'nutri', 'progreso', 'reto'].indexOf(v) !== -1 : ['pagos', 'seguimiento'].indexOf(v) !== -1;
+    if (!ok) return;
+    deepLink = null;
+    try { history.replaceState(null, '', location.pathname); } catch (e) { /* nada */ }
+    if (S.role === 'athlete') goTo(v);
+    else if (v === 'pagos') switchCoachView('pagos');
+    else { S.segTab = 'checkins'; switchCoachView('seguimiento'); }
+  }
+
+  /* ================================================================ HOY: avisos */
+  $('#open-timer').addEventListener('click', () => switchView('timer'));
+  $('#timer-back').addEventListener('click', () => switchView(S.prevView && S.prevView !== 'timer' ? S.prevView : 'home'));
+
+  function goTo(where) {
+    if (where === 'checkin') { S.progTab = 'checkin'; switchView('progreso'); }
+    else if (where === 'reto') { S.podioTab = 'reto'; switchView('stats'); }
+    else switchView(where);
+  }
+  function renderHomeAlerts() {
+    const el = $('#home-alerts');
+    if (!el || !S.me) return;
+    const st = S.state;
+    const t = today();
+    const items = [];
+    if (S.pay && S.pay.proximoPago) {
+      const d = daysBetween(t, S.pay.proximoPago);
+      if (d < 0) items.push({ cls: 'danger', icon: 'ti-alert-circle', title: 'Tu mensualidad está vencida', sub: 'VENCIÓ EL ' + fmtDay(S.pay.proximoPago) + ' · HABLA CON CARLOS' });
+      else if (d <= 3) items.push({ cls: 'warn', icon: 'ti-calendar-dollar', title: 'Tu mensualidad vence ' + inDays(d).toLowerCase(), sub: (S.pay.plan || 'MENSUALIDAD') + ' · ' + fmtDay(S.pay.proximoPago) });
+    }
+    if (st && st.me && !st.me.checkinThisWeek && dowOf(t) >= 4) {
+      items.push({ icon: 'ti-clipboard-check', title: 'Haz tu check-in semanal', sub: 'CUÉNTALE A CARLOS CÓMO VAS · +20 PTS', go: 'checkin' });
+    }
+    if (S.nutri) {
+      const n = nutriProgress();
+      items.push({ icon: n.complete ? 'ti-circle-check' : 'ti-salad', title: n.complete ? 'Nutrición de hoy completa' : 'Tu nutrición de hoy',
+        sub: n.done + '/' + n.total + ' COMIDAS' + (n.meta ? ' · ' + n.vasos + '/' + n.meta + ' VASOS DE AGUA' : '') + (n.complete ? ' · +5 PTS' : ''), go: 'nutri', pct: n.pct });
+    }
+    if (st && st.reto) {
+      const mine = st.reto.progreso.find((p) => p.athleteId === S.me.id);
+      const v = mine ? mine.value : 0;
+      items.push({ icon: 'ti-target', title: 'Reto: ' + (st.reto.titulo || 'Reto del mes'), sub: (mine && mine.done ? '¡CUMPLIDO! · ' : '') + v + '/' + st.reto.meta + ' ' + String(st.reto.unidad || '').toUpperCase(), go: 'reto', pct: Math.min(100, v / st.reto.meta * 100) });
+    }
+    el.innerHTML = items.map((x) => {
+      const open = x.go ? '<button type="button" data-go="' + x.go + '"' : '<div';
+      return open + ' class="alert-card' + (x.cls ? ' ' + x.cls : '') + '"><i class="ti ' + x.icon + '" aria-hidden="true"></i><div class="alert-main"><div class="alert-title">' + esc(x.title) + '</div><div class="alert-sub">' + esc(x.sub) + '</div>' +
+        (x.pct != null ? '<div class="mini-progress"><span style="width:' + Math.round(x.pct) + '%"></span></div>' : '') + '</div>' +
+        (x.go ? '<i class="ti ti-chevron-right" aria-hidden="true"></i></button>' : '</div>');
+    }).join('');
+  }
+  $('#home-alerts').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-go]');
+    if (b) goTo(b.dataset.go);
+  });
+
+  /* ================================================================ NUTRICIÓN (cliente) */
+  async function loadNutri() {
+    const id = S.me.id;
+    const t = today();
+    const [a, b] = await Promise.all([api('GET', 'nutri?athleteId=' + id), api('GET', 'nutrilog?athleteId=' + id + '&date=' + t)]);
+    if (!sameMe(id)) throw stale();
+    S.nutri = a.nutri || null;
+    S.nutriLog = b.log || null;
+    // si este mismo cliente tiene un guardado pendiente, se conserva lo que acaba de marcar
+    const busy = (pendingNutri || nutriInFlight || nutriNext) && nutriFor === id && S.nutriDraft && S.nutriDraft.date === t;
+    if (!busy) S.nutriDraft = { date: t, meals: Object.assign({}, (b.log && b.log.meals) || {}), vasos: (b.log && b.log.vasos) || 0 };
+  }
+  async function loadPay() {
+    const id = S.me.id;
+    const r = await api('GET', 'pay?athleteId=' + id);
+    if (!sameMe(id)) throw stale();
+    S.pay = r.pago || null;
+  }
+  const vasosMetaOf = (n) => Math.round(((n && n.agua) || 0) * 4);
+  function ensureNutriDraft() {
+    const t = today();
+    if (!S.nutriDraft || S.nutriDraft.date !== t) S.nutriDraft = { date: t, meals: {}, vasos: 0 };
+    return S.nutriDraft;
+  }
+  function nutriProgress() {
+    const n = S.nutri;
+    const d = ensureNutriDraft();
+    const ids = n ? n.comidas.map((c) => c.id) : [];
+    const done = ids.filter((id) => d.meals[id]).length;
+    const total = ids.length;
+    const meta = vasosMetaOf(n);
+    const vasos = d.vasos || 0;
+    const complete = total > 0 && done >= total && vasos >= meta;
+    const pct = total ? Math.round((done + (meta ? Math.min(1, vasos / meta) : 0)) / (total + (meta ? 1 : 0)) * 100) : 0;
+    return { done, total, meta, vasos, complete, pct };
+  }
+  const mktKey = () => 'mkt_' + (S.me ? S.me.id : '');
+  function mercadoChecks() { try { return JSON.parse(store.get(mktKey()) || '{}') || {}; } catch (e) { return {}; } }
+  function saveMercado(o) { store.set(mktKey(), Object.keys(o).length ? JSON.stringify(o) : null); }
+
+  function renderNutri() {
+    const el = $('#nutri-content');
+    if (!S.me) return;
+    if (S.nutri === undefined) { el.innerHTML = '<div class="loading-line">Cargando tu plan de comidas…</div>'; return; }
+    if (!S.nutri) {
+      el.innerHTML = emptyCard('ti-salad', 'Tu plan de alimentación está en camino',
+        'Carlos te va a armar tu plan de comidas con tus macros. Mientras tanto: proteína en cada comida, verduras y 2–3 litros de agua al día.');
+      return;
+    }
+    const n = S.nutri;
+    const d = ensureNutriDraft();
+    const pr = nutriProgress();
+    let html = '<div class="nutri-head"><div class="dh-eyebrow">PLAN DE ALIMENTACIÓN · COACH CARLOS</div><div class="dh-title">' + esc(n.objetivo || 'MI PLAN') + '</div>' +
+      '<div class="dh-sub">' + esc(fmtLong(today())) + '</div>' +
+      '<div class="dh-progress"><div class="dh-progress-top"><span>' + (pr.complete ? '¡DÍA COMPLETO! +5 PTS' : 'TU DÍA') + '</span><span><b>' + pr.done + '</b>/' + pr.total + ' COMIDAS</span></div>' +
+      '<div class="progress-track"><div class="progress-fill" style="width:' + pr.pct + '%"></div></div></div></div>';
+    const macros = [['kcal', n.kcal, 'KCAL', ''], ['p', n.proteina, 'PROTEÍNA', 'g'], ['c', n.carbos, 'CARBOS', 'g'], ['g', n.grasas, 'GRASAS', 'g']].filter((m) => m[1] > 0);
+    if (macros.length) {
+      html += '<div class="macro-grid" style="grid-template-columns:repeat(' + macros.length + ',minmax(0,1fr));">' + macros.map((m) =>
+        '<div class="macro' + (m[0] === 'kcal' ? ' kcal' : '') + '"><div class="v">' + m[1].toLocaleString('es-CO') + '<span class="u">' + m[3] + '</span></div><div class="l">' + m[2] + '</div></div>').join('') + '</div>';
+    }
+    const glasses = Math.min(40, Math.max(pr.meta, pr.vasos, 4));
+    html += '<div class="water"><div class="water-top"><div class="water-title"><i class="ti ti-droplet" aria-hidden="true"></i>AGUA</div>' +
+      '<div class="water-count">' + pr.vasos + (pr.meta ? '/' + pr.meta : '') + ' VASOS · ' + String(pr.vasos * 0.25).replace('.', ',') + (n.agua ? ' DE ' + fmtNum(n.agua) : '') + ' L</div></div>' +
+      '<div class="glasses">' + Array.from({ length: glasses }, (_, i) => '<button type="button" class="glass' + (i < pr.vasos ? ' full' : '') + '" data-glass="' + i + '" aria-label="Vaso ' + (i + 1) + '"></button>').join('') + '</div>' +
+      '<div class="water-btns"><button type="button" class="btn-ghost btn-sm" data-water="-1">− VASO</button><button type="button" class="btn-accent btn-sm" data-water="1">+ VASO (250 ML)</button></div></div>';
+    html += '<div class="section-title-podio">COMIDAS DE HOY</div>';
+    html += n.comidas.map((c) => {
+      const done = !!d.meals[c.id];
+      return '<div class="meal' + (done ? ' done' : '') + '"><div class="meal-head"><div class="meal-name">' + esc(c.nombre || 'Comida') + '</div>' + (c.hora ? '<div class="meal-hora">' + esc(c.hora) + '</div>' : '') + '</div>' +
+        (c.items.length ? '<ul class="meal-items">' + c.items.map((i) => '<li>' + esc(i.texto) + (i.alt ? '<span class="alt">o ' + esc(i.alt) + '</span>' : '') + '</li>').join('') + '</ul>' : '') +
+        (c.nota ? '<div class="meal-note">' + esc(c.nota) + '</div>' : '') +
+        '<button type="button" class="meal-check" data-meal="' + esc(c.id) + '" aria-pressed="' + done + '"><i class="ti ' + (done ? 'ti-circle-check' : 'ti-circle') + '" aria-hidden="true"></i>' + (done ? 'HECHA' : 'MARCAR COMO HECHA') + '</button></div>';
+    }).join('');
+    if (n.suplementos && n.suplementos.length) {
+      html += '<div class="tip-card"><div class="tip-card-title"><i class="ti ti-pill" aria-hidden="true"></i>SUPLEMENTOS</div><ul>' + n.suplementos.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul></div>';
+    }
+    if (n.notas) html += '<div class="tip-card"><div class="tip-card-title"><i class="ti ti-bulb" aria-hidden="true"></i>NOTAS DE CARLOS</div><div class="ci-text" style="white-space:pre-line;margin:0;">' + esc(n.notas) + '</div></div>';
+    if (n.mercado && n.mercado.length) {
+      const got = mercadoChecks();
+      const left = n.mercado.filter((x) => !got[nameKey(x)]).length;
+      html += '<div class="tip-card collapse' + (S.mktOpen ? ' open' : '') + '" id="mkt"><button type="button" class="collapse-head" data-act="mkt-toggle" aria-expanded="' + !!S.mktOpen + '">' +
+        '<span><i class="ti ti-shopping-cart" aria-hidden="true" style="color:var(--accent);margin-right:8px;"></i>LISTA DE MERCADO · ' + (left ? left + ' PENDIENTES' : 'TODO LISTO') + '</span><i class="ti ti-chevron-down" aria-hidden="true"></i></button>' +
+        '<div class="collapse-body"><ul class="check-list">' + n.mercado.map((x) => '<li class="' + (got[nameKey(x)] ? 'on' : '') + '"><button type="button" data-mkt="' + esc(x) + '"><span class="check-box"><i class="ti ti-check" aria-hidden="true"></i></span>' + esc(x) + '</button></li>').join('') + '</ul>' +
+        '<button type="button" class="link-btn" data-act="mkt-clear" style="margin-top:8px;">Desmarcar todo</button></div></div>';
+    }
+    el.innerHTML = html;
+  }
+  $('#nutri-content').addEventListener('click', (ev) => {
+    const t = ev.target;
+    if (!S.nutri || !S.me) return;
+    const mk = t.closest('[data-mkt]');
+    const act = t.closest('[data-act]');
+    if (mk) {
+      const got = mercadoChecks();
+      const k = nameKey(mk.dataset.mkt);
+      if (got[k]) delete got[k]; else got[k] = 1;
+      saveMercado(got);
+      renderNutri();
+      return;
+    }
+    if (act && act.dataset.act === 'mkt-toggle') { S.mktOpen = !S.mktOpen; renderNutri(); return; }
+    if (act && act.dataset.act === 'mkt-clear') { saveMercado({}); renderNutri(); return; }
+    const meal = t.closest('[data-meal]');
+    const glass = t.closest('[data-glass]');
+    const water = t.closest('[data-water]');
+    if (!meal && !glass && !water) return;
+    const before = nutriProgress().complete;
+    const d = ensureNutriDraft();
+    if (meal) { const id = meal.dataset.meal; if (d.meals[id]) delete d.meals[id]; else d.meals[id] = true; }
+    else if (glass) { const i = +glass.dataset.glass; d.vasos = d.vasos === i + 1 ? i : i + 1; }
+    else d.vasos = Math.max(0, Math.min(40, (d.vasos || 0) + +water.dataset.water));
+    if (!before && nutriProgress().complete) toast('¡Nutrición del día completa! +5 puntos', 'ti-salad');
+    renderNutri();
+    renderHomeAlerts();
+    scheduleNutriSave();
+  });
+  let nutriSaveTimer = null;
+  let pendingNutri = null;
+  let nutriInFlight = false;
+  let nutriNext = null;
+  let nutriFor = null;
+  function scheduleNutriSave() {
+    if (!S.me || !S.token) return;
+    nutriFor = S.me.id;
+    pendingNutri = { me: S.me, token: S.token, date: S.nutriDraft.date, body: clone({ meals: S.nutriDraft.meals, vasos: S.nutriDraft.vasos }) };
+    clearTimeout(nutriSaveTimer);
+    nutriSaveTimer = setTimeout(flushNutri, 700);
+  }
+  function flushNutri() {
+    clearTimeout(nutriSaveTimer);
+    nutriSaveTimer = null;
+    const snap = pendingNutri;
+    pendingNutri = null;
+    if (snap) saveNutriLog(snap);
+  }
+  async function saveNutriLog(snap) {
+    if (nutriInFlight) { nutriNext = snap; return; }
+    nutriInFlight = true;
+    try {
+      const r = await api('PUT', 'nutrilog?athleteId=' + snap.me.id + '&date=' + snap.date, snap.body, { token: snap.token });
+      if (sameMe(snap.me.id)) { S.nutriLog = r.log; scheduleStateRefresh(); }
+    } catch (e) {
+      if (sameMe(snap.me.id) && !quietErr(e)) {
+        if (e.code === 'NO_NUTRI') { S.nutri = null; renderNutri(); }
+        else toast(e.offline ? 'Sin conexión: tu nutrición no se guardó' : e.message, 'ti-alert-triangle', true);
+      }
+    } finally {
+      nutriInFlight = false;
+      if (nutriNext) { const n = nutriNext; nutriNext = null; saveNutriLog(n); }
+    }
+  }
+
+  /* ================================================================ PROGRESO (cliente) */
+  S.progTab = 'cuerpo';
+  S.cmpAngle = 'frente';
+  $('#prog-tabs').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-prog]');
+    if (!b) return;
+    S.progTab = b.dataset.prog;
+    renderProgress();
+  });
+  async function loadBody() {
+    const id = S.me.id;
+    const r = await api('GET', 'body?athleteId=' + id);
+    if (!sameMe(id)) throw stale();
+    S.body = r.body;
+  }
+  async function loadCheckins() {
+    const id = S.me.id;
+    const r = await api('GET', 'checkins?athleteId=' + id);
+    if (!sameMe(id)) throw stale();
+    S.checkins = r.checkins.sort((a, b) => (a.week < b.week ? 1 : -1));
+  }
+  function renderProgress() {
+    const tab = S.progTab || 'cuerpo';
+    $$('#prog-tabs .tab-btn').forEach((b) => b.classList.toggle('active', b.dataset.prog === tab));
+    $$('#view-progreso .tab-panel').forEach((p) => { const on = p.id === 'prog-panel-' + tab; p.classList.toggle('active', on); p.classList.toggle('on', on); });
+    if (!S.me) return;
+    const failed = (el) => (e) => { if (!quietErr(e)) el.innerHTML = emptyCard('ti-wifi-off', 'No se pudo cargar', e.message); };
+    if (tab === 'cuerpo') {
+      const el = $('#prog-panel-cuerpo');
+      if (S.body === undefined) {
+        el.innerHTML = '<div class="loading-line">Cargando…</div>';
+        loadOnce('body', loadBody).then(() => { if (S.view === 'progreso' && S.progTab === 'cuerpo') renderProgress(); }, failed(el));
+        return;
+      }
+      renderBodyPanel(el, bodyCtxClient());
+    }
+    if (tab === 'checkin') renderCheckinPanel();
+    if (tab === 'logros') renderLogrosPanel();
+  }
+
+  // ---- cuerpo: medidas, gráfica y fotos (se usa también en el panel del coach)
+  const MEDIDAS = [['peso', 'PESO', 'KG'], ['cintura', 'CINTURA', 'CM'], ['cadera', 'CADERA', 'CM'], ['pecho', 'PECHO', 'CM'], ['brazo', 'BRAZO', 'CM'], ['pierna', 'PIERNA', 'CM'], ['grasa', '% GRASA', '%']];
+  const ANGLES = [['frente', 'FRENTE'], ['perfil', 'PERFIL'], ['espalda', 'ESPALDA']];
+  const angleLabel = (a) => (ANGLES.find((x) => x[0] === a) || ['', 'FOTO'])[1];
+  function bodyCtxClient() {
+    return {
+      athleteId: S.me && S.me.id, doc: S.body, mine: true,
+      alive: (id) => sameMe(id),
+      set(doc) { S.body = doc; },
+      render() { if (S.view === 'progreso' && S.progTab === 'cuerpo') renderProgress(); },
+    };
+  }
+  function bodyEntries(doc) { return ((doc && doc.entries) || []).slice().sort((a, b) => (a.date < b.date ? -1 : 1)); }
+  function bodyPanelHtml(ctx) {
+    const doc = ctx.doc || { entries: [], fotos: [] };
+    const entries = bodyEntries(doc);
+    const lastOf = (k) => { for (let i = entries.length - 1; i >= 0; i--) if (entries[i][k] != null) return entries[i]; return null; };
+    const firstOf = (k) => entries.find((e) => e[k] != null) || null;
+    const tile = (k, label, unit) => {
+      const l = lastOf(k), f = firstOf(k);
+      if (!l) return '<div class="stat-tile"><div class="l">' + label + '</div><div class="v">—</div><div class="d">SIN DATOS</div></div>';
+      const diff = f && f !== l ? Math.round((l[k] - f[k]) * 10) / 10 : null;
+      return '<div class="stat-tile"><div class="l">' + label + '</div><div class="v">' + fmtNum(l[k]) + '<small>' + unit + '</small></div>' +
+        '<div class="d">' + (diff == null ? fmtDay(l.date) : (diff > 0 ? '+' : '') + fmtNum(diff) + ' DESDE ' + fmtDay(f.date)) + '</div></div>';
+    };
+    let html = '<div class="stat-tiles">' + tile('peso', 'PESO', 'KG') + tile('cintura', 'CINTURA', 'CM') + tile('grasa', '% GRASA', '%') + '</div>';
+    const pts = entries.filter((e) => e.peso != null).map((e) => ({ date: e.date, v: e.peso }));
+    if (pts.length >= 2) html += lineChartHtml('chart-peso-' + (ctx.mine ? 'me' : 'coach'), 'PESO (KG)', pts, 'KG');
+    else html += '<div class="fair-note" style="margin-bottom:12px;">Registra tu peso al menos dos veces para ver tu gráfica de progreso. Lo ideal: una vez por semana, en ayunas.</div>';
+
+    // formulario
+    const t = today();
+    const cur = entries.find((e) => e.date === t) || {};
+    html += '<form class="editor-card measure-form" data-form="body" autocomplete="off"><div class="editor-card-title">REGISTRAR MEDIDAS</div>' +
+      '<div class="form-row"><div><label class="form-label">FECHA</label><input class="form-input" type="date" name="date" value="' + t + '" max="' + t + '" required></div>' +
+      '<div><label class="form-label">PESO (KG)</label><input class="form-input" name="peso" inputmode="decimal" value="' + (cur.peso != null ? fmtNum(cur.peso) : '') + '" placeholder="—"></div></div>';
+    for (let i = 1; i < MEDIDAS.length; i += 2) {
+      html += '<div class="form-row">' + [MEDIDAS[i], MEDIDAS[i + 1]].filter(Boolean).map((m) =>
+        '<div><label class="form-label">' + m[1] + (m[2] === 'CM' ? ' (CM)' : '') + '</label><input class="form-input" name="' + m[0] + '" inputmode="decimal" value="' + (cur[m[0]] != null ? fmtNum(cur[m[0]]) : '') + '" placeholder="—"></div>').join('') + '</div>';
+    }
+    html += '<div class="form-field-group"><input class="form-input" name="nota" maxlength="120" value="' + esc(cur.nota || '') + '" placeholder="Nota (opcional): ej. después de vacaciones"></div>' +
+      '<button type="submit" class="btn-accent btn-full">GUARDAR MEDIDAS</button></form>';
+
+    // fotos
+    const fotos = ((doc.fotos) || []).slice().sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.ts - b.ts));
+    html += '<div class="section-title-podio">FOTOS DE PROGRESO</div>' +
+      '<div class="fair-note" style="margin:-4px 0 10px;">' + (ctx.mine ? 'Privadas: solo tú y Carlos las ven.' : 'Privadas: solo el cliente y tú las ven.') + ' Misma luz, misma pose y misma hora cada vez.</div>' +
+      '<div class="photo-angles">' + ANGLES.map((a) => '<button type="button" data-photo-add="' + a[0] + '"><i class="ti ti-camera-plus" aria-hidden="true"></i>' + a[1] + '</button>').join('') + '</div>';
+    const angle = S.cmpAngle || 'frente';
+    const ofAngle = fotos.filter((f) => f.angle === angle);
+    const withPairs = ANGLES.filter((a) => fotos.filter((f) => f.angle === a[0]).length >= 2);
+    if (withPairs.length) {
+      const showAngle = ofAngle.length >= 2 ? angle : withPairs[0][0];
+      const list = fotos.filter((f) => f.angle === showAngle);
+      const a0 = list[0], a1 = list[list.length - 1];
+      html += '<div class="section-title-podio">ANTES Y AHORA</div>';
+      if (withPairs.length > 1) html += '<div class="mini-filter-row">' + withPairs.map((a) => '<button type="button" class="mini-filter-btn' + (a[0] === showAngle ? ' active' : '') + '" data-cmp-angle="' + a[0] + '">' + a[1] + '</button>').join('') + '</div>';
+      html += '<div class="compare"><figure><img data-photo="' + a0.id + '" alt="Antes, ' + fmtDay(a0.date) + '"><figcaption>ANTES · ' + fmtDay(a0.date) + '</figcaption></figure>' +
+        '<figure><img data-photo="' + a1.id + '" alt="Ahora, ' + fmtDay(a1.date) + '"><figcaption>AHORA · ' + fmtDay(a1.date) + '</figcaption></figure></div>';
+    }
+    if (fotos.length) {
+      html += '<div class="photo-grid">' + fotos.slice().reverse().map((f) => '<button type="button" class="photo-cell" data-photo-open="' + f.id + '" aria-label="Ver foto ' + angleLabel(f.angle).toLowerCase() + ' del ' + fmtDay(f.date) + '"><img data-photo="' + f.id + '" alt=""><span>' + angleLabel(f.angle) + ' · ' + fmtDay(f.date) + '</span></button>').join('') + '</div>';
+    } else {
+      html += '<div class="empty-sub" style="text-align:left;">Todavía no hay fotos. Tómate la primera hoy: en 8 semanas vas a agradecerlo.</div>';
+    }
+
+    // historial (también es la vista en tabla de la gráfica)
+    if (entries.length) {
+      const cols = MEDIDAS.filter((m) => entries.some((e) => e[m[0]] != null));
+      html += '<div class="section-title-podio">HISTORIAL DE MEDIDAS</div><div class="hist-wrap"><table class="hist-table"><thead><tr><th>FECHA</th>' + cols.map((m) => '<th>' + m[1] + '</th>').join('') + '<th></th></tr></thead><tbody>' +
+        entries.slice().reverse().map((e) => '<tr><td>' + fmtDay(e.date) + '</td>' + cols.map((m) => '<td' + (e[m[0]] == null ? ' class="muted"' : '') + '>' + (e[m[0]] != null ? fmtNum(e[m[0]]) : '—') + '</td>').join('') +
+          '<td><button type="button" class="icon-btn" data-body-del="' + e.date + '" aria-label="Borrar medidas del ' + fmtDay(e.date) + '"><i class="ti ti-trash" aria-hidden="true"></i></button></td></tr>').join('') +
+        '</tbody></table></div>';
+    }
+    return html;
+  }
+  function renderBodyPanel(el, ctx) {
+    el.innerHTML = bodyPanelHtml(ctx);
+    bindChart(el);
+    loadPhotos(el, ctx.athleteId);
+  }
+
+  // ---- gráfica de línea (una serie): línea de 2 px, área suave, punto final con su valor y lectura al tocar
+  const chartData = {};
+  function lineChartHtml(id, title, pts, unit) {
+    const W = 340, H = 168, L = 30, R = 50, T = 14, B = 24;
+    const t0 = isoDate(pts[0].date).getTime(), t1 = isoDate(pts[pts.length - 1].date).getTime();
+    let lo = Math.min.apply(null, pts.map((p) => p.v)), hi = Math.max.apply(null, pts.map((p) => p.v));
+    const pad = Math.max(0.5, (hi - lo) * 0.15);
+    lo -= pad; hi += pad;
+    const step = niceStep((hi - lo) / 3);
+    lo = Math.floor(lo / step) * step; hi = Math.ceil(hi / step) * step;
+    const x = (d) => L + (t1 === t0 ? (W - L - R) / 2 : (isoDate(d).getTime() - t0) / (t1 - t0) * (W - L - R));
+    const y = (v) => T + (1 - (v - lo) / (hi - lo)) * (H - T - B);
+    const xy = pts.map((p) => ({ x: x(p.date), y: y(p.v), date: p.date, v: p.v }));
+    chartData[id] = { xy, unit };
+    let grid = '';
+    for (let v = lo; v <= hi + 1e-9; v += step) {
+      const yy = y(v).toFixed(1);
+      grid += '<line x1="' + L + '" x2="' + (W - R + 8) + '" y1="' + yy + '" y2="' + yy + '" style="stroke:var(--border);stroke-width:0.5"/>' +
+        '<text x="' + (L - 6) + '" y="' + (+yy + 3) + '" text-anchor="end">' + fmtNum(v) + '</text>';
+    }
+    const line = xy.map((p, i) => (i ? 'L' : 'M') + p.x.toFixed(1) + ' ' + p.y.toFixed(1)).join(' ');
+    const base = (H - B).toFixed(1);
+    const area = line + ' L' + xy[xy.length - 1].x.toFixed(1) + ' ' + base + ' L' + xy[0].x.toFixed(1) + ' ' + base + ' Z';
+    const end = xy[xy.length - 1];
+    const svg = '<svg class="chart-svg" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="' + esc(title) + ': de ' + fmtNum(pts[0].v) + ' a ' + fmtNum(end.v) + ' ' + unit + '">' + grid +
+      '<path d="' + area + '" style="fill:var(--accent);fill-opacity:0.1;stroke:none"/>' +
+      '<path d="' + line + '" style="fill:none;stroke:var(--accent);stroke-width:2;stroke-linejoin:round;stroke-linecap:round"/>' +
+      '<circle cx="' + end.x.toFixed(1) + '" cy="' + end.y.toFixed(1) + '" r="4.5" style="fill:var(--accent);stroke:var(--bg1);stroke-width:2"/>' +
+      '<text class="end-label" x="' + (end.x + 9).toFixed(1) + '" y="' + (end.y + 4).toFixed(1) + '">' + fmtNum(end.v) + '</text>' +
+      '<text x="' + L + '" y="' + (H - 6) + '">' + fmtDay(pts[0].date) + '</text>' +
+      '<text x="' + (W - R) + '" y="' + (H - 6) + '" text-anchor="end">' + fmtDay(end.date) + '</text>' +
+      '<g class="cross" style="display:none"><line y1="' + T + '" y2="' + (H - B) + '" style="stroke:var(--w4);stroke-width:1;stroke-dasharray:2 3"/><circle r="4.5" style="fill:var(--accent);stroke:var(--bg1);stroke-width:2"/></g>' +
+      '<rect class="hit" x="0" y="0" width="' + W + '" height="' + H + '" style="fill:transparent"/></svg>';
+    return '<div class="chart-card" data-chart="' + id + '"><div class="chart-title">' + esc(title) + '</div><div class="chart-sub">' + plural(pts.length, 'REGISTRO', 'REGISTROS') + ' · TOCA LA GRÁFICA PARA VER CADA FECHA</div>' + svg + '<div class="chart-tip"></div></div>';
+  }
+  function niceStep(raw) {
+    const p = Math.pow(10, Math.floor(Math.log10(Math.max(raw, 1e-6))));
+    const n = raw / p;
+    return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10) * p;
+  }
+  function bindChart(scope) {
+    $$('[data-chart]', scope).forEach((card) => {
+      const data = chartData[card.dataset.chart];
+      const svg = $('svg', card);
+      if (!data || !svg) return;
+      const cross = $('.cross', svg), tip = $('.chart-tip', card);
+      const show = (ev) => {
+        const r = svg.getBoundingClientRect();
+        const vx = (ev.clientX - r.left) / r.width * 340;
+        let best = data.xy[0];
+        data.xy.forEach((p) => { if (Math.abs(p.x - vx) < Math.abs(best.x - vx)) best = p; });
+        cross.style.display = '';
+        $('line', cross).setAttribute('x1', best.x); $('line', cross).setAttribute('x2', best.x);
+        $('circle', cross).setAttribute('cx', best.x); $('circle', cross).setAttribute('cy', best.y);
+        tip.innerHTML = '<b>' + fmtNum(best.v) + ' ' + data.unit + '</b><span>' + fmtDay(best.date) + '</span>';
+        tip.style.display = 'block';
+        const cr = card.getBoundingClientRect();
+        tip.style.left = Math.min(cr.width - 50, Math.max(50, r.left - cr.left + best.x / 340 * r.width)) + 'px';
+        const ty = r.top - cr.top + best.y / 168 * r.height;
+        const below = ty < 70;
+        tip.style.transform = below ? 'translate(-50%, 14px)' : 'translate(-50%, -100%)';
+        tip.style.top = (below ? ty : ty - 10) + 'px';
+      };
+      const hide = () => { cross.style.display = 'none'; tip.style.display = 'none'; };
+      svg.addEventListener('pointermove', show);
+      svg.addEventListener('pointerdown', show);
+      svg.addEventListener('pointerleave', hide);
+    });
+  }
+
+  // ---- fotos privadas: se descargan con la sesión y se muestran como blob
+  const photoCache = new Map();
+  function clearPhotoCache() { photoCache.forEach((p) => p.then((u) => { if (u) URL.revokeObjectURL(u); })); photoCache.clear(); }
+  function photoUrl(athleteId, id) {
+    const k = athleteId + '/' + id;
+    if (!photoCache.has(k)) {
+      photoCache.set(k, apiBlob('GET', 'photo?athleteId=' + athleteId + '&id=' + id).then((r) => r.blob()).then((b) => URL.createObjectURL(b)).catch(() => { photoCache.delete(k); return null; }));
+    }
+    return photoCache.get(k);
+  }
+  function loadPhotos(scope, athleteId) {
+    $$('img[data-photo]', scope).forEach((img) => {
+      photoUrl(athleteId, img.dataset.photo).then((u) => { if (u && img.isConnected) img.src = u; });
+    });
+  }
+  async function resizeImage(file, max) {
+    let src = null;
+    try { src = await createImageBitmap(file, { imageOrientation: 'from-image' }); } catch (e) { src = null; }
+    if (!src) {
+      src = await new Promise((res, rej) => {
+        const img = new Image();
+        const u = URL.createObjectURL(file);
+        img.onload = () => { URL.revokeObjectURL(u); res(img); };
+        img.onerror = () => { URL.revokeObjectURL(u); rej(new Error('No se pudo leer la foto. Prueba con otra.')); };
+        img.src = u;
+      });
+    }
+    const w0 = src.width, h0 = src.height;
+    const k = Math.min(1, max / Math.max(w0, h0));
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(w0 * k)); c.height = Math.max(1, Math.round(h0 * k));
+    c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
+    let q = 0.82, blob = null;
+    for (let i = 0; i < 4; i++) {
+      blob = await new Promise((res) => c.toBlob(res, 'image/jpeg', q));
+      if (blob && blob.size <= 880000) break;
+      q -= 0.14;
+    }
+    if (!blob || blob.size > 900000) throw new Error('La foto es muy pesada. Prueba con otra.');
+    return blob;
+  }
+  let photoTarget = null;
+  $('#photo-input').addEventListener('change', async (ev) => {
+    const f = ev.target.files && ev.target.files[0];
+    ev.target.value = '';
+    const tgt = photoTarget;
+    photoTarget = null;
+    if (!f || !tgt) return;
+    try {
+      toast('Subiendo foto…', 'ti-upload');
+      const blob = await resizeImage(f, 1080);
+      const res = await apiBlob('PUT', 'photo?athleteId=' + tgt.athleteId + '&date=' + today() + '&angle=' + tgt.angle, blob, 'image/jpeg');
+      const r = await res.json();
+      tgt.done(r.body);
+      toast('Foto guardada · ' + angleLabel(tgt.angle).toLowerCase(), 'ti-photo-check');
+    } catch (e) { if (!quietErr(e)) toastErr(e); }
+  });
+
+  // Un solo manejador por panel; ctxFn devuelve el contexto actual (cliente o el elegido por el coach).
+  function bindBodyPanel(panel, ctxFn) {
+    panel.addEventListener('click', async (ev) => {
+      const ctx = ctxFn();
+      if (!ctx.athleteId) return;
+      const id = ctx.athleteId;
+      const add = ev.target.closest('[data-photo-add]');
+      if (add) {
+        photoTarget = { athleteId: id, angle: add.dataset.photoAdd, done: (doc) => { if (ctxFn().athleteId === id && ctx.alive(id)) { ctxFn().set(doc); S.cmpAngle = add.dataset.photoAdd; ctxFn().render(); } } };
+        $('#photo-input').click();
+        return;
+      }
+      const cmp = ev.target.closest('[data-cmp-angle]');
+      if (cmp) { S.cmpAngle = cmp.dataset.cmpAngle; ctx.render(); return; }
+      const open = ev.target.closest('[data-photo-open]');
+      if (open) {
+        const f = ((ctx.doc && ctx.doc.fotos) || []).find((x) => x.id === open.dataset.photoOpen);
+        if (!f) return;
+        openModal(angleLabel(f.angle) + ' · ' + fmtShort(f.date), '<img class="photo-full" data-photo="' + f.id + '" alt="Foto de progreso">' +
+          '<button type="button" class="delete-btn" data-photo-del="' + f.id + '" style="margin-top:12px;">BORRAR FOTO</button>', {
+          onClick: async (e2) => {
+            const del = e2.target.closest('[data-photo-del]');
+            if (!del || !confirmTap(del, '¿BORRAR? TOCA OTRA VEZ')) return;
+            del.disabled = true;
+            try {
+              const r = await api('DELETE', 'photo?athleteId=' + id + '&id=' + f.id);
+              closeModal();
+              if (ctxFn().athleteId === id && ctx.alive(id)) { ctxFn().set(r.body); ctxFn().render(); }
+              toast('Foto borrada');
+            } catch (err) { del.disabled = false; if (!quietErr(err)) toastErr(err); }
+          },
+        });
+        loadPhotos($('#modal-body'), id);
+        return;
+      }
+      const del = ev.target.closest('[data-body-del]');
+      if (del) {
+        if (!confirmTap(del)) { toast('Toca otra vez para borrar esas medidas', 'ti-info-circle'); return; }
+        try {
+          const r = await api('DELETE', 'body?athleteId=' + id + '&date=' + del.dataset.bodyDel);
+          if (ctxFn().athleteId === id && ctx.alive(id)) { ctxFn().set(r.body); ctxFn().render(); }
+          toast('Medidas borradas');
+        } catch (err) { if (!quietErr(err)) toastErr(err); }
+      }
+    });
+    panel.addEventListener('change', (ev) => {
+      const input = ev.target;
+      if (input.name !== 'date' || !input.form || input.form.dataset.form !== 'body') return;
+      const e = bodyEntries(ctxFn().doc).find((x) => x.date === input.value) || {};
+      MEDIDAS.forEach((m) => { input.form.elements[m[0]].value = e[m[0]] != null ? fmtNum(e[m[0]]) : ''; });
+      input.form.elements.nota.value = e.nota || '';
+    });
+    panel.addEventListener('submit', async (ev) => {
+      const form = ev.target;
+      if (form.dataset.form !== 'body') return;
+      ev.preventDefault();
+      const ctx = ctxFn();
+      const id = ctx.athleteId;
+      if (!id) return;
+      const entry = { date: form.elements.date.value, nota: form.elements.nota.value.trim() };
+      let any = false;
+      MEDIDAS.forEach((m) => { const v = parseNum(form.elements[m[0]].value); if (v != null) { entry[m[0]] = v; any = true; } });
+      if (!any) { toast('Escribe al menos una medida', 'ti-alert-triangle', true); return; }
+      const btn = $('button[type="submit"]', form);
+      btn.disabled = true;
+      try {
+        const r = await api('PUT', 'body?athleteId=' + id, { entry });
+        if (ctxFn().athleteId === id && ctx.alive(id)) { ctxFn().set(r.body); ctxFn().render(); }
+        toast('Medidas guardadas', 'ti-ruler-measure');
+      } catch (err) {
+        btn.disabled = false;
+        if (!quietErr(err)) toastErr(err);
+      }
+    });
+  }
+  bindBodyPanel($('#prog-panel-cuerpo'), bodyCtxClient);
+
+  // ---- check-in semanal
+  const CI_SCALES = [
+    ['sueno', 'SUEÑO', '1 = MUY MAL · 5 = EXCELENTE', 'SUEÑO'],
+    ['energia', 'ENERGÍA', '1 = SIN ENERGÍA · 5 = A TOPE', 'ENERGÍA'],
+    ['estres', 'ESTRÉS', '1 = TRANQUILO · 5 = MUY ESTRESADO', 'ESTRÉS'],
+    ['hambre', 'HAMBRE', '1 = POCA · 5 = MUCHA', 'HAMBRE'],
+    ['nutricion', 'CUMPLÍ MI ALIMENTACIÓN', '1 = NADA · 5 = AL 100%', 'ALIMENTACIÓN'],
+  ];
+  const ciLow = (k, v) => !!v && (k === 'estres' ? v >= 4 : k === 'hambre' ? false : v <= 2);
+  function ciCardHtml(c, opts) {
+    opts = opts || {};
+    const pills = CI_SCALES.filter((s) => c[s[0]]).map((s) => '<span class="ci-pill' + (ciLow(s[0], c[s[0]]) ? ' low' : '') + '">' + s[3] + ' ' + c[s[0]] + '/5</span>').join('') +
+      (c.peso ? '<span class="ci-pill">PESO ' + fmtNum(c.peso) + ' KG</span>' : '');
+    return '<div class="ci-card" data-ci-athlete="' + esc(c.athleteId) + '"><div class="ci-top"><div class="ci-week">' + esc(opts.title || 'SEMANA DEL ' + fmtDay(c.week)) + '</div><div class="rate-hint">' + agoTs(c.ts) + '</div></div>' +
+      '<div class="ci-pills">' + pills + '</div>' +
+      (c.molestias ? '<div class="ci-text"><b>MOLESTIAS</b>' + esc(c.molestias) + '</div>' : '') +
+      (c.comentario ? '<div class="ci-text"><b>COMENTARIO</b>' + esc(c.comentario) + '</div>' : '') +
+      (c.respuesta ? '<div class="ci-reply"><div class="who">RESPUESTA DE CARLOS · ' + agoTs(c.respuesta.ts) + '</div><div class="txt">' + esc(c.respuesta.texto) + '</div></div>' : '') +
+      (opts.reply ? '<form class="inline-form" data-form="ci-reply" style="margin-top:10px;"><textarea class="form-textarea" name="texto" maxlength="600" placeholder="Respóndele (ej: buen trabajo, esta semana sube 2,5 kg en sentadilla)" style="min-height:70px;">' + esc(c.respuesta ? c.respuesta.texto : '') + '</textarea>' +
+        '<button type="submit" class="btn-accent">' + (c.respuesta ? 'ACTUALIZAR' : 'RESPONDER') + '</button></form>' : '') +
+      '</div>';
+  }
+  function renderCheckinPanel() {
+    const el = $('#prog-panel-checkin');
+    if (S.checkins === undefined) {
+      el.innerHTML = '<div class="loading-line">Cargando…</div>';
+      loadOnce('ci', loadCheckins).then(() => { if (S.view === 'progreso' && S.progTab === 'checkin') renderProgress(); },
+        (e) => { if (!quietErr(e)) el.innerHTML = emptyCard('ti-wifi-off', 'No se pudo cargar', e.message); });
+      return;
+    }
+    const wk = weekStart(today());
+    const cur = S.checkins.find((c) => c.week === wk);
+    let html = '';
+    if (cur && !S.ciEdit) {
+      html += '<div class="focus-card f-green" style="margin-bottom:14px;"><div class="focus-label">✓ CHECK-IN DE ESTA SEMANA ENVIADO</div>' +
+        '<div class="focus-text">' + (cur.respuesta ? 'Carlos ya te respondió. Míralo abajo.' : 'Carlos lo va a revisar y te responde aquí mismo.') + '</div>' +
+        '<div class="btn-row" style="margin-top:10px;"><button type="button" class="btn-ghost" data-act="ci-edit">EDITAR</button></div></div>';
+    } else {
+      if (!S.ciDraft) {
+        S.ciDraft = cur ? { sueno: cur.sueno, energia: cur.energia, estres: cur.estres, hambre: cur.hambre, nutricion: cur.nutricion, peso: cur.peso != null ? fmtNum(cur.peso) : '', molestias: cur.molestias || '', comentario: cur.comentario || '' }
+          : { sueno: 0, energia: 0, estres: 0, hambre: 0, nutricion: 0, peso: '', molestias: '', comentario: '' };
+      }
+      const d = S.ciDraft;
+      html += '<form class="editor-card" data-form="checkin" autocomplete="off"><div class="editor-card-title">CHECK-IN · SEMANA DEL ' + fmtDay(wk) + '</div>' +
+        '<div class="fair-note" style="margin:-4px 0 14px;">Toma 1 minuto y le ayuda a Carlos a ajustar tu plan.</div>' +
+        CI_SCALES.map((s) => '<div class="rate-row" data-rate="' + s[0] + '"><div class="rate-top"><span class="rate-label">' + s[1] + '</span><span class="rate-hint">' + s[2] + '</span></div>' +
+          '<div class="rate" role="group" aria-label="' + s[1] + '">' + [1, 2, 3, 4, 5].map((v) => '<button type="button" data-v="' + v + '" class="' + (d[s[0]] === v ? 'on' : '') + '" aria-pressed="' + (d[s[0]] === v) + '">' + v + '</button>').join('') + '</div></div>').join('') +
+        '<div class="form-field-group"><label class="form-label">PESO DE ESTA SEMANA (KG · OPCIONAL)</label><input class="form-input" name="peso" inputmode="decimal" value="' + esc(d.peso) + '" placeholder="En ayunas"></div>' +
+        '<div class="form-field-group"><label class="form-label">¿MOLESTIAS O DOLORES?</label><textarea class="form-textarea" name="molestias" maxlength="300" placeholder="Ej: rodilla derecha en la sentadilla">' + esc(d.molestias) + '</textarea></div>' +
+        '<div class="form-field-group"><label class="form-label">¿CÓMO TE FUE ESTA SEMANA?</label><textarea class="form-textarea" name="comentario" maxlength="500" placeholder="Lo bueno, lo difícil y tus dudas para Carlos">' + esc(d.comentario) + '</textarea></div>' +
+        '<div class="form-error" id="ci-error"></div>' +
+        '<button type="submit" class="publish-btn"><i class="ti ti-send" aria-hidden="true"></i><span>' + (cur ? 'GUARDAR CAMBIOS' : 'ENVIAR CHECK-IN · +20 PTS') + '</span></button>' +
+        (cur ? '<button type="button" class="link-btn" data-act="ci-cancel" style="margin-top:10px;">Cancelar</button>' : '') + '</form>';
+    }
+    html += '<div class="section-title-podio">MIS CHECK-INS</div>';
+    html += S.checkins.length ? S.checkins.map((c) => ciCardHtml(c)).join('') : '<div class="empty-sub" style="text-align:left;">Aún no has hecho check-ins. El primero suma +20 puntos.</div>';
+    el.innerHTML = html;
+  }
+  const ciPanel = $('#prog-panel-checkin');
+  ciPanel.addEventListener('click', (ev) => {
+    const act = ev.target.closest('[data-act]');
+    if (act && act.dataset.act === 'ci-edit') { S.ciEdit = true; S.ciDraft = null; renderCheckinPanel(); return; }
+    if (act && act.dataset.act === 'ci-cancel') { S.ciEdit = false; S.ciDraft = null; renderCheckinPanel(); return; }
+    const b = ev.target.closest('[data-rate] button');
+    if (!b || !S.ciDraft) return;
+    const row = b.closest('[data-rate]');
+    S.ciDraft[row.dataset.rate] = +b.dataset.v;
+    $$('button', row).forEach((x) => { const on = x === b; x.classList.toggle('on', on); x.setAttribute('aria-pressed', on); });
+  });
+  ciPanel.addEventListener('input', (ev) => {
+    const t = ev.target;
+    if (S.ciDraft && t.name && Object.prototype.hasOwnProperty.call(S.ciDraft, t.name)) S.ciDraft[t.name] = t.value;
+  });
+  ciPanel.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    if (ev.target.dataset.form !== 'checkin' || !S.ciDraft || !S.me) return;
+    const d = S.ciDraft;
+    const err = $('#ci-error');
+    const missing = CI_SCALES.filter((s) => !d[s[0]]);
+    if (missing.length) { err.textContent = 'Califica: ' + missing.map((s) => s[3].toLowerCase()).join(', '); return; }
+    const peso = parseNum(d.peso);
+    if (d.peso && (peso == null || peso < 20 || peso > 400)) { err.textContent = 'Revisa el peso'; return; }
+    err.textContent = '';
+    const btn = $('button[type="submit"]', ev.target);
+    btn.disabled = true;
+    const id = S.me.id;
+    const first = !(S.checkins || []).some((c) => c.week === weekStart(today()));
+    try {
+      const r = await api('PUT', 'checkin?athleteId=' + id + '&date=' + today(), {
+        sueno: d.sueno, energia: d.energia, estres: d.estres, hambre: d.hambre, nutricion: d.nutricion, peso, molestias: d.molestias.trim(), comentario: d.comentario.trim(),
+      });
+      if (!sameMe(id)) return;
+      S.checkins = [r.checkin].concat((S.checkins || []).filter((c) => c.week !== r.checkin.week));
+      S.ciEdit = false; S.ciDraft = null;
+      toast(first ? '¡Check-in enviado! +20 puntos' : 'Check-in actualizado', 'ti-clipboard-check');
+      scheduleStateRefresh();
+      renderCheckinPanel();
+      if (peso != null) {
+        // el peso del check-in también queda en tus medidas de hoy
+        try {
+          if (S.body === undefined) await loadBody();
+          const ex = bodyEntries(S.body).find((e) => e.date === today()) || {};
+          const rb = await api('PUT', 'body?athleteId=' + id, { entry: Object.assign({}, ex, { date: today(), peso }) });
+          if (sameMe(id)) S.body = rb.body;
+        } catch (e2) { /* opcional */ }
+      }
+    } catch (e) {
+      btn.disabled = false;
+      if (!quietErr(e)) err.textContent = e.message;
+    }
+  });
+
+  // ---- logros
+  function renderLogrosPanel() {
+    const el = $('#prog-panel-logros');
+    const me = S.state && S.state.me;
+    if (!me) { el.innerHTML = '<div class="loading-line">Cargando…</div>'; return; }
+    const earned = me.badgeList.filter((b) => b.earned).length;
+    const tile = (l, v, d) => '<div class="stat-tile"><div class="l">' + l + '</div><div class="v">' + v + '</div><div class="d">' + d + '</div></div>';
+    let html = '<div class="stat-tiles">' + tile('PUNTOS', me.points.toLocaleString('es-CO'), me.rankAll ? '#' + me.rankAll + ' DEL TEAM' : '') +
+      tile('MEJOR RACHA', me.bestStreak, 'ACTUAL ' + me.streak) + tile('LOGROS', earned + '<small>/' + me.badgeList.length + '</small>', earned ? 'SIGUE ASÍ' : 'EL PRIMERO ESTÁ CERCA') + '</div>';
+    html += '<div class="badge-grid">' + me.badgeList.map((b) => '<div class="badge' + (b.earned ? ' earned' : '') + '"><i class="ti ' + b.icon + '" aria-hidden="true"></i><div class="t">' + esc(b.titulo) + '</div>' +
+      '<div class="p">' + (b.earned ? '✓ GANADO' : Math.min(b.value, b.target) + '/' + b.target) + '</div></div>').join('') + '</div>';
+    html += '<button type="button" class="btn-outline" data-act="share-logros" style="margin-top:14px;"><i class="ti ti-brand-instagram" aria-hidden="true"></i> COMPARTIR MIS LOGROS</button>';
+    const rows = [['ENTRENOS', me.days], ['SESIONES COMPLETAS', me.complete], ['SEMANAS PERFECTAS', me.weeks], ['PRs', me.prs], ['DÍAS DE NUTRICIÓN AL 100%', me.nutriDays], ['CHECK-INS', me.checkins], ['RETOS CUMPLIDOS', me.retos]];
+    html += '<div class="points-card" style="margin-top:14px;"><div class="section-title-podio" style="margin-top:0;">MI TEMPORADA</div>' +
+      rows.map((r) => '<div class="points-row"><span class="points-label">' + r[0] + '</span><span class="points-value">' + (r[1] || 0) + '</span></div>').join('') + '</div>';
+    el.innerHTML = html;
+  }
+  $('#prog-panel-logros').addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="share-logros"]')) shareLogros();
+  });
+
+  /* ================================================================ TEAM: reto del mes */
+  function podioReto(st) {
+    const r = st.reto;
+    const mes = MESES[isoDate(today()).getUTCMonth()];
+    if (!r) return emptyCard('ti-target', 'Este mes no hay reto todavía', 'Cuando Carlos lance el reto de ' + mes.toLowerCase() + ', aquí verás la meta, el premio y cómo vas.');
+    const last = addDays(addDays(today().slice(0, 7) + '-01', 32).slice(0, 7) + '-01', -1);
+    const left = daysBetween(today(), last);
+    const mine = S.me ? r.progreso.find((p) => p.athleteId === S.me.id) : null;
+    const done = r.progreso.filter((p) => p.done).length;
+    let html = '<div class="reto-card"><div class="reto-eyebrow">RETO DE ' + mes + '</div><div class="reto-title">' + esc(r.titulo || 'Reto del mes') + '</div>' +
+      (r.descripcion ? '<div class="reto-desc">' + esc(r.descripcion) + '</div>' : '') +
+      '<div class="reto-meta"><span class="ci-pill">META: ' + r.meta + ' ' + esc(String(r.unidad).toUpperCase()) + '</span>' + (r.premio ? '<span class="ci-pill">PREMIO: ' + esc(r.premio.toUpperCase()) + '</span>' : '') +
+      '<span class="ci-pill">+100 PTS</span><span class="ci-pill">' + (left > 0 ? 'QUEDAN ' + plural(left, 'DÍA', 'DÍAS') : 'ÚLTIMO DÍA') + '</span></div>';
+    if (mine) {
+      const pct = Math.min(100, mine.value / r.meta * 100);
+      html += '<div class="reto-me"><div class="reto-me-top"><span>' + (mine.done ? '¡RETO CUMPLIDO! +100 PTS' : 'TU PROGRESO') + '</span><span>' + mine.value + '/' + r.meta + '</span></div>' +
+        '<div class="progress-track"><div class="progress-fill" style="width:' + Math.round(pct) + '%"></div></div></div>';
+    }
+    html += '</div>';
+    html += '<div class="section-title-podio">' + (done ? plural(done, 'YA LO CUMPLIÓ', 'YA LO CUMPLIERON') : 'NADIE LO HA CUMPLIDO TODAVÍA') + '</div>';
+    html += r.progreso.map((p) => {
+      const a = athleteById(p.athleteId);
+      if (!a) return '';
+      return barRow(shortName(a.name) + (S.me && a.id === S.me.id ? ' (TÚ)' : ''), p.value + '/' + r.meta + (p.done ? ' ✓' : ''), p.value / r.meta * 100, p.done ? 'gold-bar' : 'green-bar');
+    }).join('');
+    return html;
+  }
+
+  /* ================================================================ imágenes para compartir */
+  const CC = { bg: '#050505', panel: '#0E0E0E', line: '#232323', accent: '#39FF14', white: '#FFFFFF', w2: 'rgba(255,255,255,0.8)', w3: 'rgba(255,255,255,0.55)', w4: 'rgba(255,255,255,0.35)' };
+  const FD = 'Montserrat, Arial, sans-serif';
+  const FB = 'Poppins, Arial, sans-serif';
+  const font = (w, px, body) => w + ' ' + px + 'px ' + (body ? FB : FD);
+  let logoP = null;
+  function loadLogo() {
+    if (!logoP) logoP = new Promise((res) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => res(null); i.src = './assets/logo-mark.png'; });
+    return logoP;
+  }
+  async function canvasFonts() {
+    try { await Promise.all(['900 60px Montserrat', '800 30px Montserrat', '700 26px Montserrat', '500 26px Poppins', '600 26px Poppins'].map((f) => document.fonts.load(f))); } catch (e) { /* usa la fuente del sistema */ }
+  }
+  function wrapLines(ctx, text, maxW, maxLines) {
+    const words = String(text || '').split(/\s+/).filter(Boolean);
+    const lines = [];
+    let line = '';
+    words.forEach((w) => {
+      const tt = line ? line + ' ' + w : w;
+      if (line && ctx.measureText(tt).width > maxW) { lines.push(line); line = w; } else line = tt;
+    });
+    if (line) lines.push(line);
+    if (maxLines && lines.length > maxLines) {
+      const keep = lines.slice(0, maxLines);
+      let l = keep[maxLines - 1];
+      while (l.length > 1 && ctx.measureText(l + '…').width > maxW) l = l.slice(0, -1);
+      keep[maxLines - 1] = l + '…';
+      return keep;
+    }
+    return lines;
+  }
+  function fitFont(ctx, text, maxW, weight, start, min) {
+    let px = start;
+    ctx.font = font(weight, px);
+    while (px > min && ctx.measureText(text).width > maxW) { px -= 2; ctx.font = font(weight, px); }
+    return px;
+  }
+  function rrect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+  function mottoLine(ctx, cx, y, px) {
+    const parts = ['DISCIPLINA ', '+', ' CONSTANCIA ', '=', ' RESULTADOS'];
+    ctx.font = font(900, px);
+    const total = parts.reduce((s, p) => s + ctx.measureText(p).width, 0);
+    let x = cx - total / 2;
+    ctx.textAlign = 'left';
+    parts.forEach((p, i) => { ctx.fillStyle = i % 2 ? CC.accent : CC.white; ctx.fillText(p, x, y); x += ctx.measureText(p).width; });
+  }
+  async function storyCanvas(draw) {
+    await canvasFonts();
+    const logo = await loadLogo();
+    const c = document.createElement('canvas');
+    c.width = 1080; c.height = 1920;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = CC.bg; ctx.fillRect(0, 0, 1080, 1920);
+    const g = ctx.createRadialGradient(1000, 80, 0, 1000, 80, 1100);
+    g.addColorStop(0, 'rgba(57,255,20,0.24)'); g.addColorStop(1, 'rgba(57,255,20,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, 1080, 1920);
+    const g2 = ctx.createRadialGradient(60, 1900, 0, 60, 1900, 900);
+    g2.addColorStop(0, 'rgba(57,255,20,0.10)'); g2.addColorStop(1, 'rgba(57,255,20,0)');
+    ctx.fillStyle = g2; ctx.fillRect(0, 0, 1080, 1920);
+    if (logo) { const h = 92, w = logo.width * h / logo.height; ctx.drawImage(logo, 90, 150, w, h); }
+    ctx.textAlign = 'right';
+    ctx.fillStyle = CC.white; ctx.font = font(900, 32); ctx.fillText('TEAM CARLOS', 990, 192);
+    ctx.fillStyle = CC.accent; ctx.font = font(800, 20); ctx.fillText('ENTRENAMIENTO PERSONALIZADO', 990, 228);
+    ctx.textAlign = 'left';
+    draw(ctx);
+    ctx.fillStyle = CC.line; ctx.fillRect(90, 1700, 900, 2);
+    mottoLine(ctx, 540, 1790, 36);
+    ctx.font = font(800, 22); ctx.fillStyle = CC.w4; ctx.textAlign = 'center';
+    ctx.fillText('#TEAMCARLOS', 540, 1842);
+    ctx.textAlign = 'left';
+    return c;
+  }
+  function eyebrow(ctx, text, y) {
+    ctx.fillStyle = CC.accent; ctx.fillRect(90, y - 24, 56, 6);
+    ctx.font = font(800, 30); ctx.fillStyle = CC.accent; ctx.fillText(text, 166, y - 10);
+  }
+  function bigTitle(ctx, text, y, maxLines) {
+    ctx.fillStyle = CC.white;
+    const t = String(text || '').toUpperCase();
+    let px = 120;
+    let lines;
+    do { ctx.font = font(900, px); lines = wrapLines(ctx, t, 900); px -= 6; } while (lines.length > (maxLines || 3) && px > 60);
+    ctx.font = font(900, px + 6);
+    lines.slice(0, maxLines || 3).forEach((l, i) => ctx.fillText(l, 90, y + i * (px + 10)));
+    return y + Math.min(lines.length, maxLines || 3) * (px + 10);
+  }
+  function statBlocks(ctx, y, items, h) {
+    h = h || 210;
+    const n = items.length, gap = 22, w = (900 - gap * (n - 1)) / n;
+    items.forEach((it, i) => {
+      const x = 90 + i * (w + gap);
+      rrect(ctx, x, y, w, h, 24);
+      ctx.fillStyle = it[2] ? 'rgba(57,255,20,0.12)' : CC.panel; ctx.fill();
+      ctx.strokeStyle = it[2] ? 'rgba(57,255,20,0.5)' : CC.line; ctx.lineWidth = 2; ctx.stroke();
+      ctx.textAlign = 'center';
+      ctx.fillStyle = it[2] ? CC.accent : CC.white;
+      fitFont(ctx, String(it[0]), w - 36, 900, 84, 34);
+      ctx.fillText(String(it[0]), x + w / 2, y + h * 0.56);
+      ctx.font = font(800, 22); ctx.fillStyle = CC.w3;
+      ctx.fillText(it[1], x + w / 2, y + h * 0.82);
+      ctx.textAlign = 'left';
+    });
+    return y + h;
+  }
+  function presentCanvas(canvas, filename, text, title) {
+    canvas.toBlob((blob) => {
+      if (!blob) { toast('No se pudo crear la imagen', 'ti-alert-triangle', true); return; }
+      const url = URL.createObjectURL(blob);
+      let file = null;
+      try { file = new File([blob], filename, { type: 'image/png' }); } catch (e) { file = null; }
+      let canShare = false;
+      try { canShare = !!(file && navigator.canShare && navigator.canShare({ files: [file] })); } catch (e) { canShare = false; }
+      openModal(title || 'COMPARTIR', '<img class="share-preview" src="' + url + '" alt="Vista previa de la imagen">' +
+        '<div class="row-actions">' + (canShare ? '<button type="button" class="btn-accent" data-share-go><i class="ti ti-share" aria-hidden="true"></i>COMPARTIR</button>' : '') +
+        '<a class="btn-ghost" href="' + url + '" download="' + esc(filename) + '"><i class="ti ti-download" aria-hidden="true"></i>DESCARGAR</a></div>' +
+        '<div class="fair-note" style="margin-top:10px;">' + (canShare ? 'Súbela a tu historia de Instagram o mándala por WhatsApp.' : 'Descárgala y súbela a tu historia de Instagram.') + '</div>', {
+        cleanup: () => URL.revokeObjectURL(url),
+        onClick: (ev) => { if (ev.target.closest('[data-share-go]')) navigator.share({ files: [file], text }).catch(() => {}); },
+      });
+    }, 'image/png');
+  }
+
+  async function shareSession(iso) {
+    const day = planDayFor(iso);
+    const sess = sessionFor(iso);
+    if (!day || !sess || !S.me) return;
+    const exs = dayExercises(day);
+    const doneN = exs.filter((e) => exDone(sess.ex && sess.ex[e.id])).length;
+    const sets = okSets(sess);
+    const unit = unitOf().toUpperCase();
+    let vol = 0;
+    const best = [];
+    exs.forEach((e) => {
+      const rec = sess.ex && sess.ex[e.id];
+      if (!rec || !rec.sets) return;
+      const ok = rec.sets.filter((s) => s.ok);
+      ok.forEach((s) => { if (s.w > 0 && s.r > 0) vol += s.w * s.r; });
+      const top = ok.filter((s) => s.w > 0).sort((a, b) => b.w - a.w)[0];
+      if (top) best.push(e.nombre + ' · ' + fmtNum(top.w) + ' ' + unit + (top.r ? ' × ' + top.r : ''));
+    });
+    const me = S.state && S.state.me;
+    const hoy = S.state && iso === today() ? S.state.hoy.find((h) => h.athleteId === S.me.id) : null;
+    const complete = exs.length && doneN >= exs.length;
+    const pts = hoy ? hoy.points : 10 + (complete ? 15 : 0);
+    const c = await storyCanvas((ctx) => {
+      eyebrow(ctx, complete ? 'SESIÓN COMPLETA' : 'ENTRENAMIENTO HECHO', 470);
+      let y = bigTitle(ctx, day.titulo || DIAS[dowOf(iso)], 590, 3);
+      ctx.font = font(800, 30); ctx.fillStyle = CC.w3; ctx.fillText(fmtLong(iso), 90, y + 6);
+      ctx.font = font(900, 40); ctx.fillStyle = CC.white; ctx.fillText(S.me.name.toUpperCase(), 90, y + 66);
+      y = Math.max(y + 130, 900);
+      y = statBlocks(ctx, y, [[doneN + '/' + exs.length, 'EJERCICIOS'], [sets, 'SERIES'], [vol ? Math.round(vol).toLocaleString('es-CO') : '—', 'VOLUMEN ' + unit]]);
+      y = statBlocks(ctx, y + 22, [[me ? me.streak : '—', 'DÍAS DE RACHA'], ['+' + pts, 'PUNTOS', true]], 190);
+      if (best.length) {
+        y += 70;
+        ctx.font = font(800, 22); ctx.fillStyle = CC.accent; ctx.fillText('MEJORES SERIES', 90, y);
+        ctx.font = font(500, 28, true); ctx.fillStyle = CC.w2;
+        best.slice(0, Math.max(0, Math.floor((1660 - y) / 46))).forEach((b, i) => {
+          const l = wrapLines(ctx, b, 900, 1)[0];
+          ctx.fillText(l, 90, y + 50 + i * 46);
+        });
+      }
+    });
+    presentCanvas(c, 'team-carlos-entreno-' + iso + '.png', 'Entrenamiento hecho con Team Carlos 💪', 'COMPARTIR MI ENTRENO');
+  }
+
+  async function sharePr(meta) {
+    const h = rmHist(meta.name);
+    const last = h[h.length - 1];
+    if (!last || !S.me) return;
+    const prevMax = h.length > 1 ? Math.max.apply(null, h.slice(0, -1).map((x) => x.value)) : null;
+    const u = unitLabel(meta.unit);
+    const c = await storyCanvas((ctx) => {
+      eyebrow(ctx, 'NUEVO RÉCORD PERSONAL', 470);
+      let y = bigTitle(ctx, meta.name, 590, 2);
+      ctx.textAlign = 'center';
+      const val = fmtNum(last.value);
+      fitFont(ctx, val, 760, 900, 360, 140);
+      ctx.fillStyle = CC.accent;
+      ctx.fillText(val, 540, Math.max(y + 330, 1010));
+      ctx.font = font(900, 64); ctx.fillStyle = CC.white;
+      ctx.fillText(u, 540, Math.max(y + 420, 1100));
+      if (prevMax != null && last.value > prevMax) {
+        const pct = prevMax > 0 ? Math.round((last.value - prevMax) / prevMax * 100) : 0;
+        ctx.font = font(800, 40); ctx.fillStyle = CC.w2;
+        ctx.fillText('+' + fmtNum(last.value - prevMax) + ' ' + u + (pct ? ' · +' + pct + '%' : '') + ' VS. TU MÁXIMO ANTERIOR', 540, Math.max(y + 510, 1190));
+      }
+      ctx.font = font(900, 44); ctx.fillStyle = CC.white;
+      ctx.fillText(S.me.name.toUpperCase(), 540, 1480);
+      ctx.font = font(800, 28); ctx.fillStyle = CC.w3;
+      ctx.fillText(fmtLong(last.date), 540, 1530);
+      ctx.textAlign = 'left';
+    });
+    presentCanvas(c, 'team-carlos-pr.png', '¡Nuevo PR con Team Carlos! 🏆', 'COMPARTIR MI PR');
+  }
+
+  async function shareLogros() {
+    const me = S.state && S.state.me;
+    if (!me || !S.me) return;
+    const earned = me.badgeList.filter((b) => b.earned);
+    const c = await storyCanvas((ctx) => {
+      eyebrow(ctx, 'MI TEMPORADA', 470);
+      let y = bigTitle(ctx, S.me.name, 590, 2);
+      y = Math.max(y + 40, 820);
+      y = statBlocks(ctx, y, [[me.points.toLocaleString('es-CO'), 'PUNTOS', true], [me.rankAll ? '#' + me.rankAll : '—', 'EN EL TEAM']]);
+      y = statBlocks(ctx, y + 22, [[me.days, 'ENTRENOS'], [me.bestStreak, 'MEJOR RACHA'], [me.prs, 'PRs']], 190);
+      y += 80;
+      ctx.font = font(800, 24); ctx.fillStyle = CC.accent;
+      ctx.fillText('LOGROS · ' + earned.length + ' DE ' + me.badgeList.length, 90, y);
+      y += 30;
+      let x = 90;
+      ctx.font = font(800, 24);
+      earned.slice(0, 12).forEach((b) => {
+        const t = b.titulo.toUpperCase();
+        const w = ctx.measureText(t).width + 44;
+        if (x + w > 990) { x = 90; y += 70; }
+        if (y > 1600) return;
+        rrect(ctx, x, y, w, 54, 27); ctx.fillStyle = 'rgba(57,255,20,0.12)'; ctx.fill();
+        ctx.strokeStyle = 'rgba(57,255,20,0.45)'; ctx.lineWidth = 2; ctx.stroke();
+        ctx.fillStyle = CC.white; ctx.fillText(t, x + 22, y + 36);
+        x += w + 14;
+      });
+      if (!earned.length) { ctx.font = font(500, 28, true); ctx.fillStyle = CC.w3; ctx.fillText('El primer logro está a un entreno de distancia.', 90, y + 40); }
+    });
+    presentCanvas(c, 'team-carlos-logros.png', 'Mi temporada en Team Carlos 💪', 'COMPARTIR MIS LOGROS');
+  }
+
+  // ---- imagen del plan semanal (como el que entrega Carlos)
+  async function planCanvas(plan, name) {
+    await canvasFonts();
+    const logo = await loadLogo();
+    const days = plan.dias.slice().sort((a, b) => a.dow - b.dow);
+    const n = Math.max(1, days.length);
+    const W = n <= 2 ? 1400 : n <= 4 ? 2000 : n <= 5 ? 2400 : 2800;
+    const M = 70, gap = 26;
+    const colW = (W - 2 * M - gap * (n - 1)) / n;
+    const c = document.createElement('canvas');
+    const ctx = c.getContext('2d');
+    // medir (pasada 1) y dibujar (pasada 2)
+    const column = (d, x, y0, draw) => {
+      let y = y0;
+      const pad = 26, inner = colW - pad * 2;
+      y += 34;
+      if (draw) { ctx.font = font(800, 22); ctx.fillStyle = CC.accent; ctx.fillText(DIAS[d.dow], x + pad, y); }
+      y += 14;
+      ctx.font = font(900, 34);
+      const tl = wrapLines(ctx, String(d.titulo || DIAS[d.dow]).toUpperCase(), inner, 3);
+      tl.forEach((l) => { y += 40; if (draw) { ctx.fillStyle = CC.white; ctx.fillText(l, x + pad, y); } });
+      const chips = [d.subtitulo, d.duracion, d.rpe ? 'RPE ' + d.rpe : ''].filter(Boolean).join(' · ').toUpperCase();
+      if (chips) {
+        ctx.font = font(800, 18);
+        wrapLines(ctx, chips, inner, 2).forEach((l) => { y += 26; if (draw) { ctx.fillStyle = CC.w3; ctx.fillText(l, x + pad, y); } });
+      }
+      y += 18;
+      if (draw) { ctx.fillStyle = CC.line; ctx.fillRect(x + pad, y, inner, 2); }
+      y += 8;
+      (d.secciones || []).forEach((s) => {
+        if (s.titulo) {
+          y += 34;
+          if (draw) { ctx.font = font(800, 18); ctx.fillStyle = CC.accent; ctx.fillText((s.titulo + (s.nota ? ' · ' + s.nota : '')).toUpperCase(), x + pad, y); }
+        }
+        (s.ejercicios || []).forEach((e, i) => {
+          y += 12;
+          ctx.font = font(600, 22, true);
+          const nl = wrapLines(ctx, (i + 1) + '. ' + e.nombre, inner, 2);
+          nl.forEach((l) => { y += 30; if (draw) { ctx.fillStyle = CC.white; ctx.fillText(l, x + pad, y); } });
+          const presc = [e.series && e.reps ? e.series + ' × ' + e.reps : e.reps || '', e.descanso ? 'DESC. ' + e.descanso : ''].filter(Boolean).join('  ·  ').toUpperCase();
+          if (presc) { y += 28; if (draw) { ctx.font = font(800, 18); ctx.fillStyle = CC.w3; ctx.fillText(presc, x + pad, y); } }
+        });
+      });
+      return y + 30 - y0;
+    };
+    const headH = 250;
+    const colH = Math.max(420, Math.max.apply(null, days.map((d) => column(d, 0, 0, false))));
+    const tips = (plan.consejos || []).filter((t) => t.items && t.items.length).slice(0, 3);
+    const tipW = tips.length ? (W - 2 * M - gap * (tips.length - 1)) / tips.length : 0;
+    const tipBlock = (t, x, y0, draw) => {
+      let y = y0 + 44;
+      if (draw) { ctx.font = font(900, 22); ctx.fillStyle = CC.accent; ctx.fillText(String(t.titulo || 'CONSEJOS').toUpperCase(), x + 26, y); }
+      ctx.font = font(500, 21, true);
+      t.items.forEach((it) => {
+        y += 8;
+        wrapLines(ctx, '• ' + it, tipW - 52, 3).forEach((l) => { y += 30; if (draw) { ctx.fillStyle = CC.w2; ctx.fillText(l, x + 26, y); } });
+      });
+      return y + 26 - y0;
+    };
+    const tipH = tips.length ? Math.max.apply(null, tips.map((t) => tipBlock(t, 0, 0, false))) : 0;
+    const H = headH + colH + (tips.length ? 40 + tipH : 0) + 150;
+    c.width = W; c.height = H;
+    ctx.fillStyle = CC.bg; ctx.fillRect(0, 0, W, H);
+    const g = ctx.createRadialGradient(W, 0, 0, W, 0, W * 0.6);
+    g.addColorStop(0, 'rgba(57,255,20,0.16)'); g.addColorStop(1, 'rgba(57,255,20,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    // encabezado
+    let lx = M;
+    if (logo) { const h = 86, w = logo.width * h / logo.height; ctx.drawImage(logo, M, 56, w, h); lx = M + w + 40; }
+    ctx.font = font(900, 50); ctx.fillStyle = CC.white; ctx.fillText('PLAN SEMANAL DE ENTRENAMIENTO', lx, 100);
+    ctx.font = font(800, 26); ctx.fillStyle = CC.accent; ctx.fillText(String(name || '').toUpperCase() + ' · COACH CARLOS', lx, 140);
+    const facts = [['ENFOQUE', plan.enfoque], ['FRECUENCIA', plan.frecuencia], ['NIVEL', plan.nivel], ['EDAD', plan.edad ? plan.edad + ' AÑOS' : ''], ['OBJETIVO', plan.objetivo]].filter((f) => f[1]);
+    let fx = M;
+    facts.forEach((f) => {
+      ctx.font = font(800, 16); ctx.fillStyle = CC.w4; ctx.fillText(f[0], fx, 196);
+      ctx.font = font(800, 22); ctx.fillStyle = CC.white;
+      const v = wrapLines(ctx, String(f[1]).toUpperCase(), f[0] === 'OBJETIVO' ? Math.max(300, W - M - fx) : 520, 1)[0];
+      ctx.fillText(v, fx, 226);
+      fx += Math.max(ctx.measureText(v).width, ctx.measureText(f[0]).width) + 60;
+    });
+    // columnas
+    days.forEach((d, i) => {
+      const x = M + i * (colW + gap);
+      rrect(ctx, x, headH, colW, colH, 18);
+      ctx.fillStyle = CC.panel; ctx.fill();
+      ctx.strokeStyle = CC.line; ctx.lineWidth = 2; ctx.stroke();
+      ctx.fillStyle = CC.accent; ctx.fillRect(x + 18, headH, colW - 36, 4);
+      column(d, x, headH, true);
+    });
+    // consejos
+    if (tips.length) {
+      const ty = headH + colH + 40;
+      tips.forEach((t, i) => {
+        const x = M + i * (tipW + gap);
+        rrect(ctx, x, ty, tipW, tipH, 18);
+        ctx.fillStyle = CC.panel; ctx.fill();
+        ctx.strokeStyle = CC.line; ctx.lineWidth = 2; ctx.stroke();
+        tipBlock(t, x, ty, true);
+      });
+    }
+    mottoLine(ctx, W / 2, H - 64, 34);
+    return c;
+  }
+  async function sharePlanImage(plan, name) {
+    if (!plan || !plan.dias || !plan.dias.length) { toast('Ese plan todavía no tiene días', 'ti-alert-triangle', true); return; }
+    try {
+      const c = await planCanvas(plan, name);
+      presentCanvas(c, 'plan-team-carlos-' + nameKey(name).replace(/[^a-z0-9]+/g, '-') + '.png', 'Plan semanal · Team Carlos', 'IMAGEN DEL PLAN');
+    } catch (e) { toastErr(e); }
+  }
+  $('#plan-info').addEventListener('click', (ev) => {
+    if (ev.target.closest('#plan-image-btn') && S.plan && S.me) sharePlanImage(S.plan, S.me.name);
+  });
+
+  /* ================================================================ recordatorios (push) */
+  const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+  const isIOS = () => /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const isStandalone = () => (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
+  let pushKeyP = null;
+  function pushKey() {
+    if (!pushKeyP) pushKeyP = api('GET', 'push/key').then((d) => d.key || '').catch(() => { pushKeyP = null; return ''; });
+    return pushKeyP;
+  }
+  function b64ToBytes(b64) {
+    const pad = '='.repeat((4 - (b64.length % 4)) % 4);
+    const raw = atob((b64 + pad).replace(/-/g, '+').replace(/_/g, '/'));
+    return Uint8Array.from(raw, (ch) => ch.charCodeAt(0));
+  }
+  const swReady = () => Promise.race([navigator.serviceWorker.ready, new Promise((res) => setTimeout(() => res(null), 4000))]);
+  async function currentSub() {
+    try { const reg = await swReady(); return reg ? await reg.pushManager.getSubscription() : null; } catch (e) { return null; }
+  }
+  let lastPushBody = '';
+  function pushCardHtml(role) {
+    return '<div class="push-card" data-push-card="' + role + '"><div class="t"><i class="ti ti-bell" aria-hidden="true"></i>RECORDATORIOS</div>' + (lastPushBody || '<div class="d">Cargando…</div>') + '</div>';
+  }
+  async function refreshPushCards() {
+    const cards = $$('[data-push-card]');
+    if (!cards.length) return;
+    const key = await pushKey();
+    let body;
+    const role = S.role;
+    const what = role === 'coach' ? 'Te avisamos las mensualidades por vencer y los check-ins de la semana.' : 'Te avisamos el día que toca entrenar, si se te olvida marcar tus series y el domingo para tu check-in.';
+    if (!key) body = '<div class="d">Los recordatorios todavía no están activos en el servidor.</div>';
+    else if (!pushSupported()) {
+      body = isIOS() && !isStandalone()
+        ? '<div class="d">En iPhone: toca <b>Compartir</b> → <b>Agregar a pantalla de inicio</b>, abre Team Carlos desde el ícono y vuelve aquí para activarlos.</div>'
+        : '<div class="d">Este navegador no permite notificaciones. Prueba con Chrome o instala la app en tu pantalla de inicio.</div>';
+    } else if (Notification.permission === 'denied') {
+      body = '<div class="d">Bloqueaste las notificaciones de Team Carlos. Actívalas en los ajustes del navegador y vuelve aquí.</div>';
+    } else {
+      const sub = Notification.permission === 'granted' ? await currentSub() : null;
+      body = sub
+        ? '<div class="d">Activados en este teléfono ✓ ' + what + '</div><div class="row-actions"><button type="button" class="btn-ghost btn-sm" data-push="test">PROBAR</button><button type="button" class="btn-ghost btn-sm" data-push="off">DESACTIVAR</button></div>'
+        : '<div class="d">' + what + '</div><div class="row-actions"><button type="button" class="btn-accent btn-sm" data-push="on"><i class="ti ti-bell-ringing" aria-hidden="true"></i>ACTIVAR RECORDATORIOS</button></div>';
+    }
+    lastPushBody = body;
+    $$('[data-push-card]').forEach((c) => { c.innerHTML = '<div class="t"><i class="ti ti-bell" aria-hidden="true"></i>RECORDATORIOS</div>' + body; });
+  }
+  document.addEventListener('click', async (ev) => {
+    const b = ev.target.closest('[data-push]');
+    if (!b) return;
+    const act = b.dataset.push;
+    b.disabled = true;
+    try {
+      if (act === 'on') {
+        const key = await pushKey();
+        const perm = await Notification.requestPermission();
+        if (perm !== 'granted') { toast('Sin permiso no te podemos avisar', 'ti-bell-off', true); return; }
+        const reg = await swReady();
+        if (!reg) { toast('Abre la app de nuevo e intenta otra vez', 'ti-alert-triangle', true); return; }
+        let sub = await reg.pushManager.getSubscription();
+        if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(key) });
+        await api('POST', 'push', { subscription: sub.toJSON() });
+        toast('Recordatorios activados', 'ti-bell-ringing');
+      } else if (act === 'off') {
+        const sub = await currentSub();
+        if (sub) {
+          await api('DELETE', 'push', { endpoint: sub.endpoint }).catch(() => {});
+          await sub.unsubscribe().catch(() => {});
+        }
+        toast('Recordatorios desactivados', 'ti-bell-off');
+      } else if (act === 'test') {
+        const sub = await currentSub();
+        if (sub) await api('POST', 'push', { subscription: sub.toJSON() });
+        const r = await api('POST', 'push/test');
+        toast(r.sent ? 'Te enviamos una notificación de prueba' : 'No se pudo enviar. Desactiva y vuelve a activar.', r.sent ? 'ti-bell' : 'ti-alert-triangle', !r.sent);
+      }
+    } catch (e) {
+      if (!quietErr(e)) toastErr(e);
+    } finally {
+      b.disabled = false;
+      refreshPushCards();
+    }
+  });
+
   /* ================================================================ PANEL DEL COACH */
   async function loadCoachState() {
     const st = await api('GET', 'state?date=' + today());
@@ -1757,7 +2994,9 @@
   }
   async function enterCoach() {
     showOnly('coach');
-    switchCoachView('dashboard');
+    loadLibrary();
+    if (['pagos', 'seguimiento'].indexOf(deepLink) === -1) switchCoachView('dashboard');
+    applyDeepLink();
   }
   $$('#coach-panel .nav-item').forEach((b) => b.addEventListener('click', () => switchCoachView(b.dataset.coachView)));
   async function switchCoachView(v) {
@@ -1765,15 +3004,20 @@
     $$('#coach-panel .nav-item').forEach((b) => b.classList.toggle('active', b.dataset.coachView === v));
     $$('#coach-panel main.view').forEach((el) => { const on = el.id === 'coach-view-' + v; el.classList.toggle('active', on); el.classList.toggle('on', on); });
     window.scrollTo(0, 0);
+    closeModal();
+    if (v === 'seguimiento') { S.segCi = null; S.feedback = null; S.segBodyFor = null; }
     renderCoachView();
     if (v === 'plan' && S.cstate) return;
-    try { await loadCoachState(); if (S.cview === v) renderCoachView(); } catch (e) { if (e.code !== 'NO_SESSION' && !e.stale) toastErr(e); }
+    const loads = [loadCoachState()];
+    if (v === 'pagos' || v === 'dashboard') loads.push(loadPagos());
+    try { await Promise.all(loads); if (S.cview === v) renderCoachView(); } catch (e) { if (e.code !== 'NO_SESSION' && !e.stale) toastErr(e); }
   }
   function renderCoachView() {
     if (S.cview === 'dashboard') renderCoachDashboard();
     if (S.cview === 'clientes') renderClients();
     if (S.cview === 'plan') renderPlanView();
-    if (S.cview === 'progreso') renderProgreso();
+    if (S.cview === 'seguimiento') renderSeguimiento();
+    if (S.cview === 'pagos') renderPagos();
   }
   const cAthlete = (id) => ((S.cstate && S.cstate.roster) || []).find((a) => a.id === id) || null;
   const cName = (id) => { const a = cAthlete(id); return a ? a.name : '—'; };
@@ -1814,6 +3058,7 @@
     $('#coach-noplan').innerHTML = noPlan.length ? '<div class="section-title-podio" style="padding:0 20px;">CLIENTES SIN PLAN</div>' + noPlan.map((a) =>
       '<div class="who-registered-row"><div class="who-avatar wa-gray">' + esc(initials(a.name)) + '</div><div class="who-info"><div class="who-name">' + esc(a.name) + '</div><div class="who-sub">SIN PLAN SEMANAL</div></div>' +
       '<button type="button" class="action-btn" data-plan-for="' + a.id + '" style="padding:9px 12px;">CREAR PLAN</button></div>').join('') : '';
+    renderCoachExtras();
   }
   $('#coach-noplan').addEventListener('click', (ev) => {
     const b = ev.target.closest('[data-plan-for]');
@@ -1886,6 +3131,9 @@
         '<div class="client-info"><div class="client-name">' + esc(a.name) + '</div><div class="client-sub">' + sub + '</div></div><i class="ti ti-chevron-down cb-chevron" aria-hidden="true"></i></button>' +
         '<div class="client-actions"><div class="action-grid">' +
           '<button type="button" class="action-btn primary" data-act="c-plan"><i class="ti ti-clipboard-list" aria-hidden="true"></i>' + (plan ? 'EDITAR PLAN' : 'CREAR PLAN') + '</button>' +
+          '<button type="button" class="action-btn" data-act="c-nutri"><i class="ti ti-salad" aria-hidden="true"></i>COMIDAS</button>' +
+          '<button type="button" class="action-btn" data-act="c-body"><i class="ti ti-ruler-measure" aria-hidden="true"></i>MEDIDAS Y FOTOS</button>' +
+          '<button type="button" class="action-btn" data-act="c-pay"><i class="ti ti-cash" aria-hidden="true"></i>MENSUALIDAD</button>' +
           '<button type="button" class="action-btn" data-act="c-rename"><i class="ti ti-pencil" aria-hidden="true"></i>RENOMBRAR</button>' +
           '<button type="button" class="action-btn" data-act="c-gender"><i class="ti ti-arrows-exchange" aria-hidden="true"></i>' + (a.gender === 'f' ? 'CAMBIAR A HOMBRE' : 'CAMBIAR A MUJER') + '</button>' +
           '<button type="button" class="action-btn" data-act="c-pin"><i class="ti ti-key" aria-hidden="true"></i>NUEVO PIN</button>' +
@@ -1906,7 +3154,10 @@
     if (!a) { renderClients(); return; }
     const act = btn.dataset.act;
     if (act === 'c-toggle') { S.clientOpen = S.clientOpen === id ? null : id; S.clientInline = null; renderClients(); return; }
-    if (act === 'c-plan') { openPlanFor(id); return; }
+    if (act === 'c-plan') { openPlanFor(id, 'entreno'); return; }
+    if (act === 'c-nutri') { openPlanFor(id, 'nutri'); return; }
+    if (act === 'c-body') { S.segClient = id; S.segTab = 'cuerpo'; switchCoachView('seguimiento'); return; }
+    if (act === 'c-pay') { S.payOpen = id; switchCoachView('pagos'); return; }
     if (act === 'c-rename' || act === 'c-pin') {
       S.clientInline = act === 'c-rename' ? 'rename' : 'pin';
       renderClients();
@@ -2046,12 +3297,11 @@
   const newEx = () => ({ id: rid(), nombre: '', series: '3', reps: '10–12', descanso: '60 seg', modo: 'carga', nota: '' });
   const newDay = (dow) => ({ dow, titulo: '', subtitulo: '', duracion: '60–70 min', rpe: '7–8', nota: '', secciones: [{ titulo: '', nota: '', ejercicios: [newEx()] }] });
 
-  function openPlanFor(id) {
+  function openPlanFor(id, kind) {
+    if (S.pe.athleteId !== id && (S.pe.dirty || S.ne.dirty) && !window.confirm('Tienes cambios sin guardar. ¿Descartarlos?')) { switchCoachView('plan'); return; }
+    if (kind) S.planKind = kind;
     switchCoachView('plan');
-    if (S.pe.athleteId !== id) {
-      if (S.pe.dirty && !window.confirm('Tienes cambios sin guardar. ¿Descartarlos?')) return;
-      loadPlanEditor(id);
-    }
+    if (S.pe.athleteId !== id) loadPlanEditor(id);
   }
   async function loadPlanEditor(id) {
     S.pe = { athleteId: id, plan: null, exists: false, dirty: false, open: {}, loading: !!id };
@@ -2073,13 +3323,18 @@
   }
   const planSelect = $('#plan-client');
   planSelect.addEventListener('change', () => {
-    if (S.pe.dirty && !window.confirm('Tienes cambios sin guardar. ¿Descartarlos?')) { planSelect.value = S.pe.athleteId; return; }
+    if ((S.pe.dirty || S.ne.dirty) && !window.confirm('Tienes cambios sin guardar. ¿Descartarlos?')) { planSelect.value = S.pe.athleteId; return; }
     loadPlanEditor(planSelect.value);
   });
   function renderPlanView() {
     const roster = (S.cstate && S.cstate.roster) || [];
     planSelect.innerHTML = '<option value="">ELIGE UN CLIENTE…</option>' + roster.map((a) => '<option value="' + a.id + '">' + esc(a.name.toUpperCase()) + (hasPlan(a.id) ? '' : ' · SIN PLAN') + '</option>').join('');
     planSelect.value = S.pe.athleteId || '';
+    $$('#plan-kind button').forEach((b) => b.classList.toggle('on', b.dataset.v === S.planKind));
+    const isNutri = S.planKind === 'nutri';
+    $('#plan-editor').classList.toggle('hidden', isNutri);
+    $('#nutri-editor').classList.toggle('hidden', !isNutri);
+    if (isNutri) { renderNutriEditor(); return; }
     const el = $('#plan-editor');
     if (!S.pe.athleteId) { el.innerHTML = emptyCard('ti-clipboard-list', 'Elige un cliente', roster.length ? 'Selecciona un cliente para crear o editar su plan semanal.' : 'Primero agrega clientes en la pestaña Clientes.'); return; }
     if (S.pe.loading || !S.pe.plan) { el.innerHTML = '<div class="loading-line">Cargando plan…</div>'; return; }
@@ -2100,6 +3355,7 @@
     const input = (attr, val, ph, extra) => '<input class="form-input" ' + attr + ' value="' + esc(val) + '" placeholder="' + esc(ph) + '"' + (extra || '') + '>';
     let html = planStatusHtml();
     html += '<div class="plan-tools"><button type="button" class="action-btn" data-act="pe-tpl"><i class="ti ti-template" aria-hidden="true"></i>PLANTILLA TMC 5 DÍAS</button>' +
+      (p.dias.length ? '<button type="button" class="action-btn" data-act="pe-image"><i class="ti ti-photo" aria-hidden="true"></i>IMAGEN DEL PLAN</button>' : '') +
       '<select class="form-select" id="pe-copy" aria-label="Copiar plan de otro cliente"' + (others.length ? '' : ' disabled') + '><option value="">' + (others.length ? 'COPIAR DE…' : 'COPIAR (SIN OTROS PLANES)') + '</option>' +
       others.map((a) => '<option value="' + a.id + '">' + esc(a.name.toUpperCase()) + '</option>').join('') + '</select></div>';
     html += '<div class="editor-card"><div class="editor-card-title">PERFIL DEL PLAN</div>' +
@@ -2133,12 +3389,16 @@
         s.ejercicios.forEach((e, ei) => {
           const libre = e.modo === 'libre';
           html += '<div class="pex" data-ei="' + ei + '"><div class="pex-top"><span class="pex-num">' + (ei + 1) + '</span>' +
-            '<input class="form-input" data-ef="nombre" maxlength="80" value="' + esc(e.nombre) + '" placeholder="Ejercicio" aria-label="Ejercicio ' + (ei + 1) + '"></div>' +
+            '<input class="form-input" data-ef="nombre" list="ex-library" maxlength="80" value="' + esc(e.nombre) + '" placeholder="Ejercicio" aria-label="Ejercicio ' + (ei + 1) + '"></div>' +
             '<div class="pex-grid"><label>SERIES' + input('data-ef="series" inputmode="numeric" maxlength="6"', e.series, '3') + '</label>' +
             '<label>REPS / TIEMPO' + input('data-ef="reps" maxlength="16"', e.reps, '10–12') + '</label>' +
             '<label>DESCANSO' + input('data-ef="descanso" maxlength="16"', e.descanso, '60 seg') + '</label></div>' +
+            (e.video || e.alt || (S.pe.extra && S.pe.extra[e.id]) ? '<div class="pex-extra"><label>VIDEO DE TÉCNICA (LINK)' + input('data-ef="video" inputmode="url" maxlength="300"', e.video || '', 'https://youtu.be/…') + '</label>' +
+              '<label>ALTERNATIVA' + input('data-ef="alt" maxlength="80"', e.alt || '', 'Si la máquina está ocupada') + '</label></div>' : '') +
             '<div class="pex-foot"><button type="button" class="pex-mode' + (libre ? ' libre' : '') + '" data-act="pe-ex-mode" title="Con peso: el cliente anota peso y reps. Libre: solo marca la serie (movilidad, estiramientos, plancha).">' +
-            '<i class="ti ' + (libre ? 'ti-stretching' : 'ti-barbell') + '" aria-hidden="true"></i>' + (libre ? 'LIBRE (SIN PESO)' : 'CON PESO') + '</button><span class="grow"></span>' +
+            '<i class="ti ' + (libre ? 'ti-stretching' : 'ti-barbell') + '" aria-hidden="true"></i>' + (libre ? 'LIBRE (SIN PESO)' : 'CON PESO') + '</button>' +
+            (e.video || e.alt || (S.pe.extra && S.pe.extra[e.id]) ? '' : '<button type="button" class="pex-mode" data-act="pe-ex-extra" title="Agrega un video de técnica y una alternativa"><i class="ti ti-player-play" aria-hidden="true"></i>VIDEO / ALT.</button>') +
+            '<span class="grow"></span>' +
             '<button type="button" class="pex-mini" data-act="pe-ex-up" aria-label="Subir"' + (ei === 0 ? ' disabled' : '') + '><i class="ti ti-arrow-up" aria-hidden="true"></i></button>' +
             '<button type="button" class="pex-mini" data-act="pe-ex-down" aria-label="Bajar"' + (ei === s.ejercicios.length - 1 ? ' disabled' : '') + '><i class="ti ti-arrow-down" aria-hidden="true"></i></button>' +
             '<button type="button" class="pex-mini danger" data-act="pe-ex-del" aria-label="Quitar ejercicio"><i class="ti ti-trash" aria-hidden="true"></i></button></div></div>';
@@ -2189,6 +3449,17 @@
     markDirty();
   });
   planEditor.addEventListener('change', async (ev) => {
+    if (ev.target.dataset.ef === 'nombre' && S.pe.plan) {
+      const r = peRefs(ev.target);
+      const lib = r.ex && libFor(r.ex.nombre);
+      if (lib && !r.ex.video && !r.ex.alt && (lib.video || lib.alt)) {
+        r.ex.video = lib.video || ''; r.ex.alt = lib.alt || '';
+        markDirty();
+        renderPlanView();
+        toast('Agregué el video y la alternativa que ya tenías para ' + lib.nombre, 'ti-player-play');
+      }
+      return;
+    }
     if (ev.target.id !== 'pe-copy' || !ev.target.value) return;
     const sel = ev.target;
     const from = sel.value;
@@ -2215,6 +3486,14 @@
     const r = peRefs(btn);
     const p = r.p;
     const rerender = () => { markDirty(); renderPlanView(); };
+    if (act === 'pe-image') {
+      const pl = clone(p);
+      pl.dias = pl.dias.filter((d) => dayExercises(d).some((e) => e.nombre.trim()));
+      pl.dias.forEach((d) => d.secciones.forEach((s) => { s.ejercicios = s.ejercicios.filter((e) => e.nombre.trim()); }));
+      sharePlanImage(pl, cName(S.pe.athleteId));
+      return;
+    }
+    if (act === 'pe-ex-extra') { (S.pe.extra || (S.pe.extra = {}))[r.ex.id] = true; renderPlanView(); const v = $('[data-di="' + r.dayEl.dataset.di + '"] [data-si="' + r.secEl.dataset.si + '"] [data-ei="' + r.exEl.dataset.ei + '"] [data-ef="video"]', planEditor); if (v) v.focus(); return; }
     if (act === 'pe-day-toggle') { const dow = r.day.dow; S.pe.open[dow] = !S.pe.open[dow]; r.dayEl.classList.toggle('open', S.pe.open[dow]); return; }
     if (act === 'pe-unit') {
       const b = ev.target.closest('button');
@@ -2352,8 +3631,664 @@
     const maxP = prs.length ? prs[0].prs : 1;
     $('#coach-pr-bars').innerHTML = prs.length ? prs.map((x) => barRow(cName(x.athleteId), x.prs + (x.kgGain ? ' · +' + fmtNum(x.kgGain) + ' KG' : ''), x.prs / maxP * 100, 'green-bar')).join('')
       : '<div class="empty-sub" style="text-align:left;">Sin PRs este mes todavía.</div>';
-    animateBars($('#coach-view-progreso'));
+    animateBars($('#seg-panel-cumplimiento'));
   }
+
+  /* ================================================================ COACH: avisos, reto y recordatorios */
+  async function loadPagos() {
+    const r = await api('GET', 'pay');
+    if (S.role !== 'coach') throw stale();
+    S.pagos = r.pagos || [];
+  }
+  function payStatus(p, t) {
+    if (!p || !p.proximoPago) return { cls: 'pill-none', label: 'SIN FECHA', rank: 3, d: 9999 };
+    const d = daysBetween(t, p.proximoPago);
+    if (d < 0) return { cls: 'pill-late', label: 'VENCIDA ' + inDays(d), rank: 0, d };
+    if (d <= 5) return { cls: 'pill-soon', label: 'VENCE ' + inDays(d), rank: 1, d };
+    return { cls: 'pill-paid', label: 'AL DÍA · ' + fmtDay(p.proximoPago), rank: 2, d };
+  }
+  const alertHtml = (x) => {
+    const open = x.go ? '<button type="button" data-go="' + x.go + '"' : '<div';
+    return open + ' class="alert-card' + (x.cls ? ' ' + x.cls : '') + '"><i class="ti ' + x.icon + '" aria-hidden="true"></i><div class="alert-main"><div class="alert-title">' + esc(x.title) + '</div><div class="alert-sub">' + esc(x.sub) + '</div>' +
+      (x.pct != null ? '<div class="mini-progress"><span style="width:' + Math.round(x.pct) + '%"></span></div>' : '') + '</div>' +
+      (x.go ? '<i class="ti ti-chevron-right" aria-hidden="true"></i></button>' : '</div>');
+  };
+  function renderCoachExtras() {
+    const st = S.cstate;
+    if (!st) return;
+    const t = today();
+    const alerts = [];
+    const n = st.roster.length;
+    if (n) {
+      const ci = st.coach.checkinsWeek.length;
+      alerts.push({ icon: 'ti-clipboard-check', title: 'Check-ins de esta semana', sub: ci + ' DE ' + n + ' CLIENTES · TOCA PARA LEER Y RESPONDER', go: 'checkins', pct: ci / n * 100 });
+    }
+    const nt = st.coach.nutriToday;
+    if (nt.length) {
+      const full = nt.filter((x) => x.total > 0 && x.done >= x.total && x.vasos >= x.meta).length;
+      alerts.push({ icon: 'ti-salad', title: 'Nutrición de hoy', sub: plural(full, 'CLIENTE COMPLETÓ', 'CLIENTES COMPLETARON') + ' SU DÍA · ' + nt.length + ' REGISTRARON' });
+    }
+    if (S.pagos) {
+      let late = 0, soon = 0;
+      S.pagos.forEach((p) => { if (!cAthlete(p.athleteId)) return; const s = payStatus(p, t); if (s.rank === 0) late++; else if (s.rank === 1) soon++; });
+      if (late || soon) {
+        alerts.push({ cls: late ? 'danger' : 'warn', icon: 'ti-cash', go: 'pagos',
+          title: late ? plural(late, 'mensualidad vencida', 'mensualidades vencidas') : plural(soon, 'mensualidad por vencer', 'mensualidades por vencer'),
+          sub: (late && soon ? soon + ' MÁS POR VENCER · ' : '') + 'TOCA PARA COBRAR POR WHATSAPP' });
+      }
+    }
+    $('#coach-alerts').innerHTML = alerts.length ? '<div style="padding:0 20px 6px;">' + alerts.map(alertHtml).join('') + '</div>' : '';
+    renderCoachReto();
+    $('#coach-push').innerHTML = '<div style="padding:0 20px;">' + pushCardHtml('coach') + '</div>';
+    refreshPushCards();
+  }
+  $('#coach-alerts').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-go]');
+    if (!b) return;
+    if (b.dataset.go === 'checkins') { S.segTab = 'checkins'; switchCoachView('seguimiento'); }
+    else switchCoachView(b.dataset.go);
+  });
+
+  const RETO_TXT = { entrenos: 'Días entrenados', completas: 'Sesiones completas', nutricion: 'Días de nutrición al 100%', checkins: 'Check-ins semanales', prs: 'PRs (récords)' };
+  const RETO_TPLS = [
+    { titulo: '16 entrenos en el mes', tipo: 'entrenos', meta: 16, descripcion: 'Entrena al menos 16 días este mes siguiendo tu plan.' },
+    { titulo: '12 sesiones completas', tipo: 'completas', meta: 12, descripcion: 'Termina 12 sesiones completas, sin saltarte ejercicios.' },
+    { titulo: '20 días comiendo al 100%', tipo: 'nutricion', meta: 20, descripcion: 'Cumple todas tus comidas y tu agua 20 días del mes.' },
+    { titulo: '3 PRs este mes', tipo: 'prs', meta: 3, descripcion: 'Rompe 3 de tus récords personales este mes.' },
+  ];
+  function renderCoachReto() {
+    const el = $('#coach-reto');
+    const st = S.cstate;
+    if (!el || !st) return;
+    const r = st.reto;
+    const mes = MESES[isoDate(today()).getUTCMonth()];
+    let html = '<div style="padding:0 20px;"><div class="section-title-podio">RETO DE ' + mes + '</div>';
+    if (r && !S.retoEdit) {
+      const done = r.progreso.filter((p) => p.done).length;
+      html += '<div class="reto-card"><div class="reto-eyebrow">EN CURSO · +100 PTS A QUIEN LO CUMPLA</div><div class="reto-title">' + esc(r.titulo || 'Reto del mes') + '</div>' +
+        (r.descripcion ? '<div class="reto-desc">' + esc(r.descripcion) + '</div>' : '') +
+        '<div class="reto-meta"><span class="ci-pill">META ' + r.meta + ' ' + esc(String(r.unidad).toUpperCase()) + '</span>' + (r.premio ? '<span class="ci-pill">PREMIO: ' + esc(r.premio.toUpperCase()) + '</span>' : '') +
+        '<span class="ci-pill">' + done + ' DE ' + st.roster.length + ' CUMPLIERON</span></div></div>';
+      html += r.progreso.slice(0, 6).map((p) => barRow(shortName(cName(p.athleteId)), p.value + '/' + r.meta + (p.done ? ' ✓' : ''), p.value / r.meta * 100, p.done ? 'gold-bar' : 'green-bar')).join('');
+      html += '<div class="btn-row" style="margin-top:10px;"><button type="button" class="btn-ghost" data-reto="edit">EDITAR</button><button type="button" class="btn-ghost" data-reto="del">QUITAR RETO</button></div>';
+      el.innerHTML = html + '</div>';
+      animateBars(el);
+      return;
+    }
+    if (!r && !S.retoEdit) {
+      html += '<div class="push-card" style="margin-top:0;"><div class="t"><i class="ti ti-target" aria-hidden="true"></i>SIN RETO ESTE MES</div><div class="d">Un reto mensual motiva al team: quien cumpla la meta suma +100 puntos y aparece en la pestaña RETO del podio.</div>' +
+        '<div class="row-actions"><button type="button" class="btn-accent btn-sm" data-reto="new"><i class="ti ti-plus" aria-hidden="true"></i>LANZAR RETO</button></div></div>';
+      el.innerHTML = html + '</div>';
+      return;
+    }
+    const d = S.retoDraft || (S.retoDraft = r ? { titulo: r.titulo || '', tipo: r.tipo, meta: r.meta, descripcion: r.descripcion || '', premio: r.premio || '' } : clone(RETO_TPLS[0]));
+    html += '<form class="editor-card" data-form="reto" autocomplete="off"><div class="editor-card-title">' + (r ? 'EDITAR RETO' : 'NUEVO RETO DE ' + mes) + '</div>' +
+      (r ? '' : '<div class="mini-filter-row" style="margin-bottom:12px;">' + RETO_TPLS.map((x, i) => '<button type="button" class="mini-filter-btn" data-reto-tpl="' + i + '">' + esc(x.titulo.toUpperCase()) + '</button>').join('') + '</div>') +
+      '<div class="form-field-group"><label class="form-label">TÍTULO</label><input class="form-input" name="titulo" maxlength="60" value="' + esc(d.titulo) + '" placeholder="16 entrenos en el mes"></div>' +
+      '<div class="form-row" style="margin-bottom:14px;"><div><label class="form-label">QUÉ SE MIDE</label><select class="form-select" name="tipo">' +
+      Object.keys(RETO_TXT).map((k) => '<option value="' + k + '"' + (d.tipo === k ? ' selected' : '') + '>' + RETO_TXT[k].toUpperCase() + '</option>').join('') + '</select></div>' +
+      '<div><label class="form-label">META</label><input class="form-input" name="meta" inputmode="numeric" maxlength="3" value="' + esc(d.meta) + '"></div></div>' +
+      '<div class="form-field-group"><label class="form-label">DESCRIPCIÓN</label><input class="form-input" name="descripcion" maxlength="200" value="' + esc(d.descripcion) + '"></div>' +
+      '<div class="form-field-group"><label class="form-label">PREMIO (OPCIONAL)</label><input class="form-input" name="premio" maxlength="100" value="' + esc(d.premio) + '" placeholder="Ej: camiseta TMC o una sesión gratis"></div>' +
+      '<div class="form-error" id="reto-error"></div>' +
+      '<div class="btn-row"><button type="submit" class="btn-accent">' + (r ? 'GUARDAR' : 'LANZAR RETO') + '</button><button type="button" class="btn-ghost" data-reto="cancel">CANCELAR</button></div></form>';
+    el.innerHTML = html + '</div>';
+  }
+  const retoEl = $('#coach-reto');
+  retoEl.addEventListener('click', async (ev) => {
+    const tpl = ev.target.closest('[data-reto-tpl]');
+    if (tpl) { S.retoDraft = clone(RETO_TPLS[+tpl.dataset.retoTpl]); renderCoachReto(); return; }
+    const b = ev.target.closest('[data-reto]');
+    if (!b) return;
+    const act = b.dataset.reto;
+    if (act === 'new' || act === 'edit') { S.retoEdit = true; S.retoDraft = null; renderCoachReto(); return; }
+    if (act === 'cancel') { S.retoEdit = false; S.retoDraft = null; renderCoachReto(); return; }
+    if (act === 'del') {
+      if (!confirmTap(b, '¿QUITAR? TOCA OTRA VEZ')) return;
+      try {
+        await api('DELETE', 'reto?month=' + today().slice(0, 7));
+        await loadCoachState();
+        toast('Reto quitado');
+        renderCoachView();
+      } catch (e) { toastErr(e); }
+    }
+  });
+  retoEl.addEventListener('input', (ev) => {
+    if (S.retoDraft && ev.target.name) S.retoDraft[ev.target.name] = ev.target.value;
+  });
+  retoEl.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const d = S.retoDraft;
+    if (!d) return;
+    const meta = parseInt(d.meta, 10);
+    const err = $('#reto-error');
+    if (!(meta >= 1 && meta <= 100)) { err.textContent = 'La meta debe estar entre 1 y 100'; return; }
+    const btn = $('button[type="submit"]', ev.target);
+    btn.disabled = true;
+    try {
+      await api('PUT', 'reto?month=' + today().slice(0, 7), { titulo: d.titulo.trim(), tipo: d.tipo, meta, descripcion: d.descripcion.trim(), premio: d.premio.trim() });
+      S.retoEdit = false; S.retoDraft = null;
+      await loadCoachState();
+      toast('Reto publicado · el team ya lo ve', 'ti-target');
+      renderCoachView();
+    } catch (e) { btn.disabled = false; err.textContent = e.message; }
+  });
+
+  /* ================================================================ COACH: biblioteca de ejercicios */
+  function loadLibrary() {
+    api('GET', 'library').then((r) => { S.library = r.items || []; fillDatalist(); }).catch(() => {});
+  }
+  function fillDatalist() {
+    let dl = $('#ex-library');
+    if (!dl) { dl = document.createElement('datalist'); dl.id = 'ex-library'; document.body.appendChild(dl); }
+    const names = new Map();
+    (S.library || []).forEach((i) => names.set(nameKey(i.nombre), i.nombre));
+    TPL.dias.forEach((d) => d.secciones.forEach((s) => s.ejercicios.forEach((e) => { if (!names.has(nameKey(e.nombre))) names.set(nameKey(e.nombre), e.nombre); })));
+    dl.innerHTML = Array.from(names.values()).sort((a, b) => a.localeCompare(b, 'es')).map((n) => '<option value="' + esc(n) + '"></option>').join('');
+  }
+  const libFor = (nombre) => (S.library || []).find((i) => nameKey(i.nombre) === nameKey(nombre)) || null;
+
+  /* ================================================================ COACH: plan de alimentación */
+  S.planKind = 'entreno';
+  S.ne = { athleteId: '', nutri: null, exists: false, dirty: false, loading: false, failed: '' };
+  $('#plan-kind').addEventListener('click', (ev) => {
+    const b = ev.target.closest('button');
+    if (!b) return;
+    S.planKind = b.dataset.v;
+    renderPlanView();
+  });
+  const ACTIVIDAD = [[1.2, 'SEDENTARIO'], [1.375, 'LIGERO · 1–3 DÍAS'], [1.55, 'MODERADO · 3–5 DÍAS'], [1.725, 'ALTO · 6–7 DÍAS'], [1.9, 'MUY ALTO · DOBLE SESIÓN']];
+  const OBJETIVOS = [['VOLUMEN', 0.1], ['DEFINICIÓN', -0.2], ['MANTENIMIENTO', 0], ['RECOMPOSICIÓN', -0.1]];
+  function calcMacros(c, gender, objetivo) {
+    const peso = parseNum(c.peso), est = parseNum(c.estatura), edad = parseNum(c.edad), act = Number(c.actividad) || 1.55;
+    if (!(peso >= 30 && est >= 120 && edad >= 12)) return null;
+    const bmr = 10 * peso + 6.25 * est - 5 * edad + (gender === 'f' ? -161 : 5);
+    const tdee = bmr * act;
+    const adj = (OBJETIVOS.find((o) => o[0] === objetivo) || [0, 0])[1];
+    const kcal = Math.round(tdee * (1 + adj) / 10) * 10;
+    const proteina = Math.round(peso * (objetivo === 'DEFINICIÓN' ? 2.2 : objetivo === 'VOLUMEN' ? 1.8 : 2));
+    const grasas = Math.round(peso * (objetivo === 'DEFINICIÓN' ? 0.8 : 0.9));
+    const carbos = Math.max(0, Math.round((kcal - proteina * 4 - grasas * 9) / 4));
+    const agua = Math.round(peso * 0.035 * 10) / 10;
+    return { bmr: Math.round(bmr), tdee: Math.round(tdee), adj, kcal, proteina, carbos, grasas, agua };
+  }
+  const M = (nombre, hora, items, nota) => ({ id: '', nombre, hora, items: items.map((i) => ({ texto: i[0], alt: i[1] || '' })), nota: nota || '' });
+  const NUT_TPL = {
+    comidas: [
+      M('Desayuno', '6:30 a. m.', [['3 huevos revueltos o en tortilla', '1 taza de claras + 1 huevo'], ['1 arepa mediana o 2 tajadas de pan integral', '1 taza de avena en hojuelas'], ['1 fruta (banano, papaya o piña)'], ['Café o chocolate sin azúcar']]),
+      M('Media mañana', '10:00 a. m.', [['1 yogur griego sin azúcar', '1 scoop de proteína en agua'], ['1 puñado de maní o almendras (30 g)'], ['1 fruta']]),
+      M('Almuerzo', '1:00 p. m.', [['150–200 g de pechuga, carne magra o pescado', 'atún, cerdo magro o pavo'], ['1 taza de arroz o 1 papa mediana', '1 taza de pasta o 1 plátano pequeño'], ['Ensalada grande con 1 cda de aceite de oliva', 'verduras salteadas'], ['½ taza de fríjoles o lentejas']], 'Empieza por la proteína y las verduras.'),
+      M('Pre-entreno', '4:30 p. m.', [['1 banano + 1 cda de mantequilla de maní', '2 tajadas de pan con jamón de pavo'], ['Café negro (opcional)']], '60–90 minutos antes de entrenar.'),
+      M('Cena', '8:00 p. m.', [['150 g de proteína (pollo, pescado, huevos o carne)'], ['Verduras al gusto'], ['½ aguacate', '1 cda de aceite de oliva'], ['½ taza de arroz o 1 arepa pequeña (días de entreno)']]),
+    ],
+    suplementos: ['Proteína whey: 1 scoop después de entrenar', 'Creatina monohidratada: 5 g al día, a cualquier hora'],
+    mercado: ['Huevos', 'Pechuga de pollo', 'Carne molida magra', 'Atún en agua', 'Yogur griego sin azúcar', 'Avena en hojuelas', 'Arroz', 'Papa', 'Arepas', 'Pan integral', 'Plátano', 'Fríjoles o lentejas', 'Banano', 'Papaya', 'Piña', 'Aguacate', 'Maní o almendras', 'Mantequilla de maní', 'Aceite de oliva', 'Verduras variadas'],
+    notas: 'Toma el agua repartida en el día, no toda de golpe. Si no puedes hacer una comida, usa la alternativa. Evita gaseosas y alcohol entre semana; una comida libre el fin de semana está bien.',
+  };
+  const emptyNutri = () => ({ objetivo: '', kcal: '', proteina: '', carbos: '', grasas: '', agua: '', comidas: [M('Desayuno', '', [['']])], suplementos: [], mercado: [], notas: '', calc: { peso: '', estatura: '', edad: '', actividad: 1.55 } });
+  const nutriWithIds = (n) => { const x = clone(n); x.comidas.forEach((c) => { c.id = rid(); }); return x; };
+
+  async function loadNutriEditor(id) {
+    S.ne = { athleteId: id, nutri: null, exists: false, dirty: false, loading: !!id, failed: '' };
+    if (S.planKind === 'nutri') renderPlanView();
+    if (!id) return;
+    try {
+      const [r, b] = await Promise.all([api('GET', 'nutri?athleteId=' + id), api('GET', 'body?athleteId=' + id).catch(() => ({ body: null }))]);
+      if (S.ne.athleteId !== id) return;
+      const n = r.nutri ? clone(r.nutri) : emptyNutri();
+      n.calc = Object.assign({ peso: '', estatura: '', edad: '', actividad: 1.55 }, n.calc || {});
+      ['peso', 'estatura', 'edad'].forEach((k) => { if (!n.calc[k]) n.calc[k] = ''; });
+      const lastPeso = b.body ? bodyEntries(b.body).filter((e) => e.peso != null).pop() : null;
+      if (!n.calc.peso && lastPeso) n.calc.peso = Math.round(lastPeso.peso);
+      if (!n.calc.edad && S.pe.athleteId === id && S.pe.plan && S.pe.plan.edad) n.calc.edad = S.pe.plan.edad;
+      S.ne.nutri = n;
+      S.ne.exists = !!r.nutri;
+    } catch (e) {
+      if (S.ne.athleteId !== id) return;
+      if (!quietErr(e)) toastErr(e);
+      S.ne.failed = id;
+    }
+    S.ne.loading = false;
+    if (S.planKind === 'nutri') renderPlanView();
+  }
+  function neStatusHtml() {
+    if (S.ne.dirty) return '<span class="plan-status ps-dirty" id="ne-status">CAMBIOS SIN GUARDAR</span>';
+    return S.ne.exists ? '<span class="plan-status ps-live" id="ne-status">PLAN DE COMIDAS PUBLICADO · EL CLIENTE YA LO VE</span>' : '<span class="plan-status ps-new" id="ne-status">SIN PLAN DE COMIDAS TODAVÍA</span>';
+  }
+  function neDirty() {
+    S.ne.dirty = true;
+    const s = $('#ne-status');
+    if (s) { s.className = 'plan-status ps-dirty'; s.textContent = 'CAMBIOS SIN GUARDAR'; }
+  }
+  const macroKcal = (n) => (parseNum(n.proteina) || 0) * 4 + (parseNum(n.carbos) || 0) * 4 + (parseNum(n.grasas) || 0) * 9;
+  function macroHintText(n) {
+    const k = macroKcal(n);
+    if (!k) return 'Usa la calculadora o escribe los macros a mano.';
+    const target = parseNum(n.kcal) || 0;
+    const diff = target ? Math.round(k - target) : 0;
+    return 'Proteína×4 + carbos×4 + grasas×9 = ' + Math.round(k).toLocaleString('es-CO') + ' kcal' + (target ? (Math.abs(diff) <= 50 ? ' ✓ cuadra con el total' : ' (' + (diff > 0 ? '+' : '') + diff + ' vs. el total)') : '');
+  }
+  function renderNutriEditor() {
+    const el = $('#nutri-editor');
+    const id = S.pe.athleteId;
+    if (!id) { el.innerHTML = emptyCard('ti-salad', 'Elige un cliente', 'Selecciona un cliente para armar su plan de alimentación.'); return; }
+    if (S.ne.athleteId !== id && S.ne.failed !== id && !S.ne.loading) { loadNutriEditor(id); return; }
+    if (S.ne.failed === id) { el.innerHTML = emptyCard('ti-wifi-off', 'No se pudo cargar', '', '<button type="button" class="btn-accent" data-act="ne-retry" style="margin-top:12px;">REINTENTAR</button>'); return; }
+    if (S.ne.loading || !S.ne.nutri) { el.innerHTML = '<div class="loading-line">Cargando plan de comidas…</div>'; return; }
+    const n = S.ne.nutri;
+    const a = cAthlete(id);
+    const others = ((S.cstate && S.cstate.roster) || []).filter((x) => x.id !== id);
+    const inp = (attr, val, ph) => '<input class="form-input" ' + attr + ' value="' + esc(val == null ? '' : val) + '" placeholder="' + esc(ph || '') + '">';
+    let html = neStatusHtml();
+    html += '<div class="plan-tools"><button type="button" class="action-btn" data-act="ne-tpl"><i class="ti ti-template" aria-hidden="true"></i>PLANTILLA TMC</button>' +
+      '<select class="form-select" id="ne-copy" aria-label="Copiar plan de comidas de otro cliente"' + (others.length ? '' : ' disabled') + '><option value="">COPIAR DE…</option>' +
+      others.map((x) => '<option value="' + x.id + '">' + esc(x.name.toUpperCase()) + '</option>').join('') + '</select></div>';
+    const res = calcMacros(n.calc, a && a.gender, n.objetivo);
+    html += '<div class="editor-card"><div class="editor-card-title">CALCULADORA DE CALORÍAS</div>' +
+      '<div class="calc-grid"><label>PESO (KG)' + inp('data-cf="peso" inputmode="decimal" maxlength="5"', n.calc.peso, '75') + '</label>' +
+      '<label>ESTATURA (CM)' + inp('data-cf="estatura" inputmode="numeric" maxlength="3"', n.calc.estatura, '175') + '</label>' +
+      '<label>EDAD' + inp('data-cf="edad" inputmode="numeric" maxlength="3"', n.calc.edad, '30') + '</label></div>' +
+      '<div class="form-row" style="margin-bottom:10px;"><div><label class="form-label">ACTIVIDAD</label><select class="form-select" data-cf="actividad">' +
+      ACTIVIDAD.map((x) => '<option value="' + x[0] + '"' + (Math.abs((Number(n.calc.actividad) || 1.55) - x[0]) < 0.01 ? ' selected' : '') + '>' + x[1] + '</option>').join('') + '</select></div>' +
+      '<div><label class="form-label">OBJETIVO</label><select class="form-select" data-nf="objetivo"><option value="">—</option>' +
+      OBJETIVOS.map((o) => '<option value="' + o[0] + '"' + (n.objetivo === o[0] ? ' selected' : '') + '>' + o[0] + '</option>').join('') + '</select></div></div>' +
+      '<button type="button" class="btn-accent btn-full" data-act="ne-calc"><i class="ti ti-calculator" aria-hidden="true"></i> CALCULAR MACROS</button>' +
+      '<div class="calc-result" id="ne-calc-result">' + (res ? 'Metabolismo basal ' + res.bmr.toLocaleString('es-CO') + ' kcal · gasto diario ' + res.tdee.toLocaleString('es-CO') + ' kcal' +
+        (n.objetivo ? ' · ' + n.objetivo.toLowerCase() + ' ' + (res.adj > 0 ? '+' : '') + Math.round(res.adj * 100) + '% → ' + res.kcal.toLocaleString('es-CO') + ' kcal' : '') + '. Fórmula Mifflin-St Jeor (' + (a && a.gender === 'f' ? 'mujer' : 'hombre') + ').'
+        : 'Escribe peso, estatura y edad del cliente para calcular.') + '</div></div>';
+    html += '<div class="editor-card"><div class="editor-card-title">MACROS DEL DÍA</div><div class="macro-edit">' +
+      '<label>KCAL' + inp('data-nf="kcal" inputmode="numeric" maxlength="5"', n.kcal || '', '2400') + '</label>' +
+      '<label>PROTEÍNA G' + inp('data-nf="proteina" inputmode="numeric" maxlength="4"', n.proteina || '', '150') + '</label>' +
+      '<label>CARBOS G' + inp('data-nf="carbos" inputmode="numeric" maxlength="4"', n.carbos || '', '250') + '</label>' +
+      '<label>GRASAS G' + inp('data-nf="grasas" inputmode="numeric" maxlength="4"', n.grasas || '', '70') + '</label>' +
+      '<label>AGUA L' + inp('data-nf="agua" inputmode="decimal" maxlength="4"', n.agua ? fmtNum(n.agua) : '', '3') + '</label></div>' +
+      '<div class="calc-result" id="ne-macro-hint">' + esc(macroHintText(n)) + '</div></div>';
+    html += '<div class="editor-card"><div class="editor-card-title">COMIDAS (' + n.comidas.length + '/8)</div>';
+    n.comidas.forEach((c, mi) => {
+      html += '<div class="meal-edit" data-mi="' + mi + '"><div class="meal-edit-head">' +
+        '<input class="form-input mn" data-mf="nombre" maxlength="40" value="' + esc(c.nombre) + '" placeholder="Comida" aria-label="Nombre de la comida">' +
+        '<input class="form-input mh" data-mf="hora" maxlength="12" value="' + esc(c.hora) + '" placeholder="Hora" aria-label="Hora">' +
+        '<button type="button" class="pex-mini" data-act="ne-meal-up" aria-label="Subir"' + (mi === 0 ? ' disabled' : '') + '><i class="ti ti-arrow-up" aria-hidden="true"></i></button>' +
+        '<button type="button" class="pex-mini" data-act="ne-meal-down" aria-label="Bajar"' + (mi === n.comidas.length - 1 ? ' disabled' : '') + '><i class="ti ti-arrow-down" aria-hidden="true"></i></button>' +
+        '<button type="button" class="pex-mini danger" data-act="ne-meal-del" aria-label="Quitar comida"><i class="ti ti-trash" aria-hidden="true"></i></button></div>' +
+        c.items.map((it, fi) => '<div class="food-row" data-fi="' + fi + '"><input class="form-input" data-ff="texto" maxlength="100" value="' + esc(it.texto) + '" placeholder="Ej: 150 g de pechuga">' +
+          '<input class="form-input" data-ff="alt" maxlength="100" value="' + esc(it.alt) + '" placeholder="Alternativa (opcional)" aria-label="Alternativa">' +
+          '<button type="button" class="pex-mini danger" data-act="ne-food-del" aria-label="Quitar alimento"><i class="ti ti-x" aria-hidden="true"></i></button></div>').join('') +
+        '<button type="button" class="add-exercise-btn" data-act="ne-food-add"' + (c.items.length >= 15 ? ' disabled' : '') + '>+ ALIMENTO</button>' +
+        '<input class="form-input" data-mf="nota" maxlength="200" value="' + esc(c.nota) + '" placeholder="Nota (opcional)" style="margin-top:8px;"></div>';
+    });
+    html += (n.comidas.length < 8 ? '<button type="button" class="add-exercise-btn" data-act="ne-meal-add">+ COMIDA</button>' : '') + '</div>';
+    html += '<div class="editor-card"><div class="editor-card-title">SUPLEMENTOS</div><textarea class="form-textarea" data-nt="suplementos" placeholder="Uno por línea">' + esc((n.suplementos || []).join('\n')) + '</textarea></div>';
+    html += '<div class="editor-card"><div class="editor-card-title">LISTA DE MERCADO</div><textarea class="form-textarea" data-nt="mercado" placeholder="Un producto por línea" style="min-height:120px;">' + esc((n.mercado || []).join('\n')) + '</textarea></div>';
+    html += '<div class="editor-card"><div class="editor-card-title">NOTAS PARA EL CLIENTE</div><textarea class="form-textarea" data-nt="notas" maxlength="600" placeholder="Ej: el día de descanso baja los carbohidratos a la mitad">' + esc(n.notas || '') + '</textarea></div>';
+    html += '<button type="button" class="publish-btn" data-act="ne-save"><i class="ti ti-send" aria-hidden="true"></i><span>' + (S.ne.exists ? 'GUARDAR CAMBIOS' : 'PUBLICAR PLAN DE COMIDAS') + '</span></button>';
+    if (S.ne.exists) html += '<button type="button" class="delete-btn" data-act="ne-delete">BORRAR PLAN DE COMIDAS</button>';
+    el.innerHTML = html;
+  }
+  const nutriEditor = $('#nutri-editor');
+  nutriEditor.addEventListener('input', (ev) => {
+    const t = ev.target;
+    const n = S.ne.nutri;
+    if (!n || t.id === 'ne-copy') return;
+    const mealEl = t.closest('[data-mi]');
+    const meal = mealEl ? n.comidas[+mealEl.dataset.mi] : null;
+    if (t.dataset.cf) n.calc[t.dataset.cf] = t.value;
+    else if (t.dataset.nf) {
+      n[t.dataset.nf] = t.value;
+      const h = $('#ne-macro-hint');
+      if (h) h.textContent = macroHintText(n);
+    } else if (t.dataset.mf && meal) meal[t.dataset.mf] = t.value;
+    else if (t.dataset.ff && meal) meal.items[+t.closest('[data-fi]').dataset.fi][t.dataset.ff] = t.value;
+    else if (t.dataset.nt) n[t.dataset.nt] = t.dataset.nt === 'notas' ? t.value : t.value.split('\n');
+    else return;
+    neDirty();
+  });
+  nutriEditor.addEventListener('change', async (ev) => {
+    const t = ev.target;
+    if (t.dataset.cf === 'actividad' || t.dataset.nf === 'objetivo') { neDirty(); renderNutriEditor(); return; }
+    if (t.id !== 'ne-copy' || !t.value) return;
+    const from = t.value;
+    if (S.ne.exists || S.ne.dirty) { if (!window.confirm('Esto reemplaza las comidas de este cliente (sin guardar todavía). ¿Continuar?')) { t.value = ''; return; } }
+    try {
+      const r = await api('GET', 'nutri?athleteId=' + from);
+      if (!r.nutri) { toast('Ese cliente no tiene plan de comidas', 'ti-alert-triangle', true); t.value = ''; return; }
+      const cur = S.ne.nutri;
+      const next = nutriWithIds(r.nutri);
+      next.calc = cur.calc;
+      delete next.updatedAt;
+      S.ne.nutri = next;
+      neDirty();
+      renderNutriEditor();
+      toast('Comidas copiadas de ' + firstName(cName(from)) + '. Ajusta los macros y guarda.', 'ti-copy');
+    } catch (e) { toastErr(e); t.value = ''; }
+  });
+  nutriEditor.addEventListener('click', async (ev) => {
+    const btn = ev.target.closest('[data-act]');
+    if (!btn) return;
+    const act = btn.dataset.act;
+    if (act === 'ne-retry') { S.ne.failed = ''; loadNutriEditor(S.pe.athleteId); return; }
+    const n = S.ne.nutri;
+    if (!n) return;
+    const mealEl = btn.closest('[data-mi]');
+    const mi = mealEl ? +mealEl.dataset.mi : -1;
+    const rerender = () => { neDirty(); renderNutriEditor(); };
+    if (act === 'ne-calc') {
+      const a = cAthlete(S.pe.athleteId);
+      if (!n.objetivo) { toast('Elige el objetivo primero', 'ti-alert-triangle', true); return; }
+      const r = calcMacros(n.calc, a && a.gender, n.objetivo);
+      if (!r) { toast('Escribe peso, estatura y edad', 'ti-alert-triangle', true); return; }
+      Object.assign(n, { kcal: r.kcal, proteina: r.proteina, carbos: r.carbos, grasas: r.grasas, agua: r.agua });
+      rerender();
+      toast('Macros calculados: ' + r.kcal.toLocaleString('es-CO') + ' kcal', 'ti-calculator');
+      return;
+    }
+    if (act === 'ne-tpl') {
+      if ((S.ne.exists || n.comidas.some((c) => c.items.some((i) => i.texto.trim()))) && !confirmTap(btn, '¿REEMPLAZAR? TOCA OTRA VEZ')) return;
+      const next = nutriWithIds(NUT_TPL);
+      S.ne.nutri = Object.assign({}, n, { comidas: next.comidas, suplementos: next.suplementos.slice(), mercado: next.mercado.slice(), notas: next.notas });
+      rerender();
+      toast('Plantilla cargada. Calcula los macros y ajusta las porciones.', 'ti-template');
+      return;
+    }
+    if (act === 'ne-meal-add') { if (n.comidas.length < 8) { const m = M('', '', [['']]); m.id = rid(); n.comidas.push(m); } rerender(); return; }
+    if (act === 'ne-meal-del') {
+      if (n.comidas.length <= 1) { toast('El plan necesita al menos una comida', 'ti-info-circle'); return; }
+      if (!confirmTap(btn)) return;
+      n.comidas.splice(mi, 1); rerender(); return;
+    }
+    if (act === 'ne-meal-up' || act === 'ne-meal-down') {
+      const j = act === 'ne-meal-up' ? mi - 1 : mi + 1;
+      if (j < 0 || j >= n.comidas.length) return;
+      const tmp = n.comidas[mi]; n.comidas[mi] = n.comidas[j]; n.comidas[j] = tmp;
+      rerender(); return;
+    }
+    if (act === 'ne-food-add') {
+      const c = n.comidas[mi];
+      if (c.items.length < 15) c.items.push({ texto: '', alt: '' });
+      rerender();
+      const rows = $$('[data-mi="' + mi + '"] [data-ff="texto"]', nutriEditor);
+      if (rows.length) rows[rows.length - 1].focus();
+      return;
+    }
+    if (act === 'ne-food-del') {
+      const c = n.comidas[mi];
+      c.items.splice(+btn.closest('[data-fi]').dataset.fi, 1);
+      if (!c.items.length) c.items.push({ texto: '', alt: '' });
+      rerender(); return;
+    }
+    if (act === 'ne-save') {
+      const lines = (v) => (Array.isArray(v) ? v : String(v || '').split('\n')).map((x) => String(x).trim()).filter(Boolean);
+      const payload = {
+        objetivo: n.objetivo, kcal: parseNum(n.kcal) || 0, proteina: parseNum(n.proteina) || 0, carbos: parseNum(n.carbos) || 0, grasas: parseNum(n.grasas) || 0, agua: parseNum(n.agua) || 0,
+        comidas: n.comidas.map((c) => ({ id: c.id, nombre: c.nombre.trim(), hora: c.hora.trim(), nota: c.nota.trim(), items: c.items.map((i) => ({ texto: i.texto.trim(), alt: i.alt.trim() })).filter((i) => i.texto) }))
+          .filter((c) => c.nombre || c.items.length),
+        suplementos: lines(n.suplementos), mercado: lines(n.mercado), notas: (n.notas || '').trim(),
+        calc: { peso: parseNum(n.calc.peso) || 0, estatura: parseNum(n.calc.estatura) || 0, edad: parseNum(n.calc.edad) || 0, actividad: Number(n.calc.actividad) || 1.55 },
+      };
+      if (!payload.comidas.length) { toast('Agrega al menos una comida', 'ti-alert-triangle', true); return; }
+      btn.classList.add('publishing'); btn.disabled = true;
+      const id = S.pe.athleteId;
+      try {
+        const r = await api('PUT', 'nutri?athleteId=' + id, payload);
+        if (S.ne.athleteId !== id) return;
+        const next = clone(r.nutri);
+        next.calc = Object.assign({}, n.calc);
+        S.ne.nutri = next; S.ne.exists = true; S.ne.dirty = false;
+        toast('Plan de comidas publicado · ' + firstName(cName(id)) + ' ya lo ve', 'ti-send');
+        renderNutriEditor();
+      } catch (e) {
+        toastErr(e);
+        btn.classList.remove('publishing'); btn.disabled = false;
+      }
+      return;
+    }
+    if (act === 'ne-delete') {
+      if (!confirmTap(btn, '¿BORRAR? TOCA OTRA VEZ')) return;
+      try {
+        await api('DELETE', 'nutri?athleteId=' + S.pe.athleteId);
+        const calc = n.calc;
+        S.ne.nutri = emptyNutri(); S.ne.nutri.calc = calc; S.ne.exists = false; S.ne.dirty = false;
+        toast('Plan de comidas borrado');
+        renderNutriEditor();
+      } catch (e) { toastErr(e); }
+    }
+  });
+
+  /* ================================================================ COACH: seguimiento */
+  S.segTab = 'cumplimiento';
+  $('#seg-tabs').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-seg]');
+    if (!b) return;
+    S.segTab = b.dataset.seg;
+    renderSeguimiento();
+  });
+  function renderSeguimiento() {
+    $$('#seg-tabs .tab-btn').forEach((b) => b.classList.toggle('active', b.dataset.seg === S.segTab));
+    $$('#coach-view-seguimiento .tab-panel').forEach((p) => { const on = p.id === 'seg-panel-' + S.segTab; p.classList.toggle('active', on); p.classList.toggle('on', on); });
+    if (S.segTab === 'cumplimiento') renderProgreso();
+    if (S.segTab === 'checkins') renderSegCheckins();
+    if (S.segTab === 'cuerpo') renderSegCuerpo();
+    if (S.segTab === 'comentarios') renderSegComentarios();
+  }
+  // ---- check-ins de la semana
+  function segCiWeek() {
+    if (S.segCiOffset == null) S.segCiOffset = dowOf(today()) <= 1 ? -1 : 0;
+    return addDays(weekStart(today()), S.segCiOffset * 7);
+  }
+  function renderSegCheckins() {
+    const el = $('#seg-panel-checkins');
+    const st = S.cstate;
+    const wk = segCiWeek();
+    let html = '<div class="week-nav" style="padding:0 0 14px;"><button type="button" class="icon-btn" data-ciwk="-1" aria-label="Semana anterior"' + (S.segCiOffset <= -11 ? ' disabled' : '') + '><i class="ti ti-chevron-left" aria-hidden="true"></i></button>' +
+      '<div class="wn-label">' + (S.segCiOffset === 0 ? 'ESTA SEMANA · ' : S.segCiOffset === -1 ? 'SEMANA PASADA · ' : '') + fmtDay(wk) + ' – ' + fmtDay(addDays(wk, 6)) + '</div>' +
+      '<button type="button" class="icon-btn" data-ciwk="1" aria-label="Semana siguiente"' + (S.segCiOffset >= 0 ? ' disabled' : '') + '><i class="ti ti-chevron-right" aria-hidden="true"></i></button></div>';
+    if (!st || !S.segCi || S.segCi.week !== wk) {
+      el.innerHTML = html + '<div class="loading-line">Cargando…</div>';
+      loadOnce('segci' + wk, () => api('GET', 'checkins?week=' + wk)).then((r) => {
+        S.segCi = { week: wk, list: r.checkins };
+        if (S.cview === 'seguimiento' && S.segTab === 'checkins' && segCiWeek() === wk) renderSegCheckins();
+      }, (e) => { if (!quietErr(e)) el.innerHTML = html + emptyCard('ti-wifi-off', 'No se pudo cargar', e.message); });
+      return;
+    }
+    const list = S.segCi.list.filter((c) => cAthlete(c.athleteId)).sort((a, b) => (!!a.respuesta - !!b.respuesta) || b.ts - a.ts);
+    const done = new Set(list.map((c) => c.athleteId));
+    const pending = st.roster.filter((a) => !done.has(a.id));
+    const unanswered = list.filter((c) => !c.respuesta).length;
+    html += '<div class="stat-tiles"><div class="stat-tile"><div class="l">CHECK-INS</div><div class="v">' + list.length + '<small>/' + st.roster.length + '</small></div><div class="d">ESTA SEMANA</div></div>' +
+      '<div class="stat-tile"><div class="l">SIN RESPONDER</div><div class="v">' + unanswered + '</div><div class="d">' + (unanswered ? 'RESPÓNDELES HOY' : 'AL DÍA') + '</div></div>' +
+      '<div class="stat-tile"><div class="l">CON MOLESTIAS</div><div class="v">' + list.filter((c) => c.molestias).length + '</div><div class="d">' + (list.some((c) => c.molestias) ? 'REVISA SU PLAN' : 'NINGUNO') + '</div></div></div>';
+    html += list.length ? list.map((c) => ciCardHtml(c, { title: cName(c.athleteId), reply: true })).join('') : emptyCard('ti-clipboard-check', 'Nadie ha hecho su check-in esta semana', 'Los clientes lo ven en Progreso → Check-in. El domingo les llega un recordatorio si activaron las notificaciones.');
+    if (pending.length) {
+      html += '<div class="section-title-podio">FALTAN (' + pending.length + ')</div>' + pending.map((a) =>
+        '<div class="who-registered-row" style="padding-left:0;padding-right:0;"><div class="who-avatar wa-gray">' + esc(initials(a.name)) + '</div><div class="who-info"><div class="who-name">' + esc(a.name) + ' <span class="pill pill-pending">PENDIENTE</span></div></div></div>').join('');
+    }
+    el.innerHTML = html;
+  }
+  const segCiEl = $('#seg-panel-checkins');
+  segCiEl.addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-ciwk]');
+    if (!b || b.disabled) return;
+    S.segCiOffset = Math.max(-11, Math.min(0, segCiOffsetSafe() + +b.dataset.ciwk));
+    renderSegCheckins();
+  });
+  const segCiOffsetSafe = () => (S.segCiOffset == null ? 0 : S.segCiOffset);
+  segCiEl.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const form = ev.target;
+    if (form.dataset.form !== 'ci-reply') return;
+    const card = form.closest('[data-ci-athlete]');
+    const id = card.dataset.ciAthlete;
+    const wk = S.segCi.week;
+    const texto = form.elements.texto.value.trim();
+    const btn = $('button[type="submit"]', form);
+    btn.disabled = true;
+    try {
+      const r = await api('POST', 'checkin/reply?athleteId=' + id + '&date=' + wk, { texto });
+      if (S.segCi && S.segCi.week === wk) S.segCi.list = S.segCi.list.map((c) => (c.athleteId === id ? r.checkin : c));
+      toast(texto ? 'Respuesta enviada a ' + firstName(cName(id)) : 'Respuesta borrada', 'ti-send');
+      renderSegCheckins();
+    } catch (e) { btn.disabled = false; toastErr(e); }
+  });
+  // ---- cuerpo de cada cliente
+  function bodyCtxCoach() {
+    return {
+      athleteId: S.segClient, doc: S.segBody, mine: false,
+      alive: () => S.role === 'coach',
+      set(doc) { S.segBody = doc; },
+      render() { if (S.cview === 'seguimiento' && S.segTab === 'cuerpo') renderSegCuerpo(); },
+    };
+  }
+  function renderSegCuerpo() {
+    const el = $('#seg-panel-cuerpo');
+    const roster = (S.cstate && S.cstate.roster) || [];
+    if (S.segClient && !roster.some((a) => a.id === S.segClient)) S.segClient = '';
+    let html = '<div class="form-field-group"><label class="form-label" for="seg-body-client">CLIENTE</label><select class="form-select" id="seg-body-client"><option value="">ELIGE UN CLIENTE…</option>' +
+      roster.map((a) => '<option value="' + a.id + '"' + (a.id === S.segClient ? ' selected' : '') + '>' + esc(a.name.toUpperCase()) + '</option>').join('') + '</select></div><div id="seg-body"></div>';
+    el.innerHTML = html;
+    const box = $('#seg-body');
+    if (!S.segClient) { box.innerHTML = emptyCard('ti-ruler-measure', 'Elige un cliente', 'Mira su peso, medidas y fotos de progreso. También puedes registrar sus medidas en la sesión.'); return; }
+    if (S.segBodyFor !== S.segClient) {
+      box.innerHTML = '<div class="loading-line">Cargando…</div>';
+      const id = S.segClient;
+      loadOnce('segbody' + id, () => api('GET', 'body?athleteId=' + id)).then((r) => {
+        if (S.segClient !== id) return;
+        S.segBody = r.body; S.segBodyFor = id;
+        if (S.cview === 'seguimiento' && S.segTab === 'cuerpo') renderSegCuerpo();
+      }, (e) => { if (!quietErr(e)) box.innerHTML = emptyCard('ti-wifi-off', 'No se pudo cargar', e.message); });
+      return;
+    }
+    renderBodyPanel(box, bodyCtxCoach());
+  }
+  $('#seg-panel-cuerpo').addEventListener('change', (ev) => {
+    if (ev.target.id !== 'seg-body-client') return;
+    S.segClient = ev.target.value;
+    S.segBodyFor = null; S.segBody = null;
+    renderSegCuerpo();
+  });
+  bindBodyPanel($('#seg-panel-cuerpo'), bodyCtxCoach);
+  // ---- comentarios de los clientes en sus ejercicios
+  function renderSegComentarios() {
+    const el = $('#seg-panel-comentarios');
+    if (!S.feedback) el.innerHTML = '<div class="loading-line">Cargando…</div>';
+    loadOnce('feedback', () => api('GET', 'feedback?days=14')).then((r) => {
+      S.feedback = r.notas;
+      if (S.cview !== 'seguimiento' || S.segTab !== 'comentarios') return;
+      const list = S.feedback.filter((x) => cAthlete(x.athleteId));
+      el.innerHTML = '<div class="fair-note" style="margin-bottom:6px;">Notas que tus clientes dejaron en sus ejercicios en los últimos 14 días.</div>' +
+        (list.length ? list.map((x) => '<div class="note-row"><div class="who">' + esc(cName(x.athleteId)) + '</div><div class="meta">' + esc(x.ejercicio) + ' · ' + fmtDay(x.date) + ' · ' + agoDate(x.date) + '</div><div class="txt">' + esc(x.nota) + '</div></div>').join('')
+          : emptyCard('ti-message-circle', 'Sin comentarios recientes', 'Cuando un cliente escriba una nota en un ejercicio (por ejemplo, una molestia), aparece aquí.'));
+    }, (e) => { if (!quietErr(e)) el.innerHTML = emptyCard('ti-wifi-off', 'No se pudo cargar', e.message); });
+  }
+
+  /* ================================================================ COACH: mensualidades */
+  function waLink(phone, msg) {
+    let p = String(phone || '').replace(/[^\d]/g, '');
+    if (p.length === 10 && p[0] === '3') p = '57' + p;
+    return p.length >= 8 ? 'https://wa.me/' + p + '?text=' + encodeURIComponent(msg) : '';
+  }
+  function renderPagos() {
+    const el = $('#pagos-content');
+    const st = S.cstate;
+    if (!st || !S.pagos) { el.innerHTML = '<div class="loading-line">Cargando…</div>'; return; }
+    const t = today();
+    const month = t.slice(0, 7);
+    const byId = {};
+    S.pagos.forEach((p) => { byId[p.athleteId] = p; });
+    const rows = st.roster.map((a) => { const p = byId[a.id] || null; return { a, p, s: payStatus(p, t) }; })
+      .sort((x, y) => x.s.rank - y.s.rank || x.s.d - y.s.d || x.a.name.localeCompare(y.a.name, 'es'));
+    let cobrado = 0;
+    S.pagos.forEach((p) => (p.historial || []).forEach((h) => { if (h.fecha && h.fecha.slice(0, 7) === month) cobrado += h.valor || 0; }));
+    const late = rows.filter((r) => r.s.rank === 0).length;
+    const soon = rows.filter((r) => r.s.rank === 1).length;
+    const ok = rows.filter((r) => r.s.rank === 2).length;
+    let html = '<div class="stat-tiles"><div class="stat-tile"><div class="l">COBRADO EN ' + MESES3[+month.slice(5) - 1] + '</div><div class="v" style="font-size:16px;">' + money(cobrado) + '</div><div class="d">REGISTRADO EN LA APP</div></div>' +
+      '<div class="stat-tile"><div class="l">AL DÍA</div><div class="v">' + ok + '</div><div class="d">' + soon + ' POR VENCER</div></div>' +
+      '<div class="stat-tile"><div class="l">VENCIDAS</div><div class="v" style="color:' + (late ? 'var(--danger)' : 'inherit') + ';">' + late + '</div><div class="d">' + (late ? 'COBRA POR WHATSAPP' : 'TODO EN ORDEN') + '</div></div></div>';
+    if (!rows.length) { el.innerHTML = html + emptyCard('ti-users', 'Aún no hay clientes', 'Agrega clientes en la pestaña Clientes.'); return; }
+    html += '<div class="fair-note" style="margin-bottom:6px;">Los clientes solo ven su fecha de pago (nunca los valores de otros).</div>';
+    html += rows.map(({ a, p, s }) => {
+      const open = S.payOpen === a.id;
+      const d = p || { plan: 'Mensualidad', valor: '', ciclo: 30, proximoPago: '', telefono: '', nota: '', historial: [] };
+      let body = '';
+      if (open) {
+        const msg = 'Hola ' + firstName(a.name) + ', ¿cómo vas? Te recuerdo que tu mensualidad de Team Carlos' + (d.valor ? ' (' + money(d.valor) + ')' : '') +
+          (d.proximoPago ? (s.rank === 0 ? ' venció el ' : ' vence el ') + fmtLong(d.proximoPago).toLowerCase() : ' está pendiente') + '. ¡Gracias y a seguir dándole! 💪';
+        const wa = waLink(d.telefono, msg);
+        body = '<div class="pay-body"><form data-form="pay" data-id="' + a.id + '" autocomplete="off">' +
+          '<div class="form-row" style="margin-bottom:10px;"><div><label class="form-label">PLAN</label><input class="form-input" name="plan" maxlength="40" value="' + esc(d.plan) + '" placeholder="Mensualidad"></div>' +
+          '<div><label class="form-label">VALOR ($)</label><input class="form-input" name="valor" inputmode="numeric" maxlength="10" value="' + esc(d.valor || '') + '" placeholder="250000"></div></div>' +
+          '<div class="form-row" style="margin-bottom:10px;"><div><label class="form-label">PRÓXIMO PAGO</label><input class="form-input" type="date" name="proximoPago" value="' + esc(d.proximoPago || '') + '"></div>' +
+          '<div><label class="form-label">CADA (DÍAS)</label><input class="form-input" name="ciclo" inputmode="numeric" maxlength="3" value="' + esc(d.ciclo || 30) + '"></div></div>' +
+          '<div class="form-field-group"><label class="form-label">WHATSAPP</label><input class="form-input" name="telefono" type="tel" inputmode="tel" maxlength="20" value="' + esc(d.telefono || '') + '" placeholder="300 123 4567"></div>' +
+          '<div class="form-field-group"><label class="form-label">NOTA</label><input class="form-input" name="nota" maxlength="200" value="' + esc(d.nota || '') + '" placeholder="Ej: paga por Nequi"></div>' +
+          '<div class="btn-row"><button type="submit" class="btn-ghost">GUARDAR DATOS</button><button type="button" class="btn-accent" data-pay="registrar">REGISTRAR PAGO HOY</button></div></form>' +
+          (wa ? '<a class="wa-link" href="' + esc(wa) + '" target="_blank" rel="noopener noreferrer" style="margin-top:10px;"><i class="ti ti-brand-whatsapp" aria-hidden="true"></i>RECORDAR POR WHATSAPP</a>' : '<div class="fair-note" style="margin-top:10px;">Agrega su WhatsApp para enviarle el recordatorio con un toque.</div>') +
+          ((d.historial || []).length ? '<div class="section-title-podio">PAGOS REGISTRADOS</div>' + d.historial.slice().reverse().slice(0, 8).map((h) =>
+            '<div class="points-row"><span class="points-label">' + fmtShort(h.fecha) + (h.nota ? ' · ' + esc(h.nota) : '') + '</span><span class="points-value">' + money(h.valor) + '</span></div>').join('') : '') +
+          (p ? '<button type="button" class="delete-btn" data-pay="delete" style="margin-top:12px;">QUITAR DATOS DE PAGO</button>' : '') + '</div>';
+      }
+      return '<div class="pay-row' + (open ? ' open' : '') + '" data-id="' + a.id + '"><button type="button" class="pay-head" data-pay="toggle" aria-expanded="' + open + '"><div class="who-avatar ' + (s.rank === 0 ? 'wa-gray' : 'wa-green') + '">' + esc(initials(a.name)) + '</div>' +
+        '<div class="client-info"><div class="client-name">' + esc(a.name) + '</div><div class="client-sub"><span class="pill ' + s.cls + '">' + esc(s.label) + '</span>' + (p && p.plan ? ' · ' + esc(p.plan.toUpperCase()) : '') + '</div></div>' +
+        '<div class="pay-amount">' + (p && p.valor ? money(p.valor) : '—') + '</div></button>' + body + '</div>';
+    }).join('');
+    el.innerHTML = html;
+  }
+  const pagosEl = $('#pagos-content');
+  pagosEl.addEventListener('click', async (ev) => {
+    const b = ev.target.closest('[data-pay]');
+    if (!b) return;
+    const row = b.closest('.pay-row');
+    const id = row && row.dataset.id;
+    if (!id) return;
+    const act = b.dataset.pay;
+    if (act === 'toggle') { S.payOpen = S.payOpen === id ? null : id; renderPagos(); return; }
+    if (act === 'registrar') {
+      const form = $('form[data-form="pay"]', row);
+      const valor = parseNum(form.elements.valor.value);
+      if (!valor) { toast('Escribe el valor de la mensualidad', 'ti-alert-triangle', true); return; }
+      b.disabled = true;
+      try {
+        await api('PUT', 'pay?athleteId=' + id, payPayload(form));
+        const r = await api('POST', 'pay/registrar?athleteId=' + id, { fecha: today(), valor });
+        upsertPago(id, r.pago);
+        toast('Pago registrado · próximo: ' + fmtDay(r.pago.proximoPago), 'ti-cash');
+        renderPagos();
+      } catch (e) { b.disabled = false; toastErr(e); }
+      return;
+    }
+    if (act === 'delete') {
+      if (!confirmTap(b, '¿QUITAR? TOCA OTRA VEZ')) return;
+      try {
+        await api('DELETE', 'pay?athleteId=' + id);
+        S.pagos = S.pagos.filter((p) => p.athleteId !== id);
+        toast('Datos de pago quitados');
+        renderPagos();
+      } catch (e) { toastErr(e); }
+    }
+  });
+  function payPayload(form) {
+    return {
+      plan: form.elements.plan.value.trim(), valor: parseNum(form.elements.valor.value) || 0, ciclo: parseInt(form.elements.ciclo.value, 10) || 30,
+      proximoPago: form.elements.proximoPago.value || null, telefono: form.elements.telefono.value.trim(), nota: form.elements.nota.value.trim(),
+    };
+  }
+  function upsertPago(id, pago) {
+    S.pagos = (S.pagos || []).filter((p) => p.athleteId !== id).concat([Object.assign({ athleteId: id }, pago)]);
+  }
+  pagosEl.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const form = ev.target;
+    if (form.dataset.form !== 'pay') return;
+    const id = form.dataset.id;
+    const btn = $('button[type="submit"]', form);
+    btn.disabled = true;
+    try {
+      const r = await api('PUT', 'pay?athleteId=' + id, payPayload(form));
+      upsertPago(id, r.pago);
+      toast('Datos guardados');
+      renderPagos();
+    } catch (e) { btn.disabled = false; toastErr(e); }
+  });
 
   /* ================================================================ arranque */
   function boot() {

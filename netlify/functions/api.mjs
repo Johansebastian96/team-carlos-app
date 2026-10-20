@@ -10,8 +10,10 @@ import { randomBytes } from 'node:crypto';
 import {
   GENDERS, PR_UNITS, HISTORY_START,
   athleteKey, parseAthleteKey, maskKey, parseMaskKey, sessionKey, sessionPrefix, parseSessionKey,
-  prKey, parsePrKey, cleanName, nameKey, isISODate, addDays, weekdayIdx, computeState,
+  prKey, parsePrKey, cleanName, nameKey, isISODate, addDays, weekdayIdx, weekStart, computeState,
+  nutriKey, nutriPrefix, parseNutriKey, checkinKey, parseCheckinKey, retoKey, parseRetoKey, RETO_TIPOS,
 } from '../../src/core.mjs';
+import { vapidPublicKey, sendToSubscriptions, subKey, runReminders } from '../../src/push.mjs';
 import { checkCredentials, issueToken, verifyToken, makePinRecord, checkPin, PIN_RE } from '../../src/auth.mjs';
 
 export const config = { path: '/api/*' };
@@ -111,6 +113,8 @@ function sanitizePlan(p) {
           descanso: str(e?.descanso, 16),
           modo: e?.modo === 'libre' ? 'libre' : 'carga',
           nota: str(e?.nota, 120),
+          video: safeUrl(e?.video),
+          alt: str(e?.alt, 80),
         })).filter((e) => e.nombre).filter(() => budget-- > 0).map((e) => ({ ...e, id: exId(e.id) })),
       })).filter((s) => s.ejercicios.length),
     };
@@ -154,7 +158,7 @@ function sanitizeSession(b, date, athleteId, plan, prev) {
     if (!EX_RE.test(id) || RESERVED.has(id) || (allowed && !allowed.has(id))) continue;
     if (++count > 60) break;
     const sets = arr(obj(e).sets, 12).map((s) => ({ w: numOrNull(s?.w), r: numOrNull(s?.r), ok: !!s?.ok }));
-    ex[id] = { nombre: str(e?.nombre, 80), sets, done: sets.length > 0 && sets.every((s) => s.ok) };
+    ex[id] = { nombre: str(e?.nombre, 80), sets, done: sets.length > 0 && sets.every((s) => s.ok), nota: str(e?.nota, 200) };
   }
   const total = planIds ? planIds.length : 0;
   const doneCount = Object.values(ex).filter((e) => e.done).length;
@@ -223,14 +227,17 @@ const clearPinAttempts = async (id) => deleteKeys(await listKeys(`pa/${id}/`));
 
 // Borra todo lo de un cliente (también sirve si quedó a medias).
 async function deleteAthleteData(id) {
-  const [sKeys, pKeys, mKeys, aKeys, paKeys] = await Promise.all([
+  const [sKeys, pKeys, mKeys, aKeys, paKeys, nKeys, ciKeys, phKeys, pushKeys] = await Promise.all([
     listKeys('s/'), listKeys('p/'), listKeys(`pd/${id}~`), listKeys(`a/${id}~`), listKeys(`pa/${id}/`),
+    listKeys('n/'), listKeys('ci/'), listKeys(`ph/${id}/`), listKeys(`push/${id}/`),
   ]);
   const theirs = [
     ...sKeys.filter((k) => parseSessionKey(k)?.athleteId === id),
     ...pKeys.filter((k) => parsePrKey(k)?.athleteId === id),
-    ...mKeys, ...paKeys,
-    `rm/${id}`, `plan/${id}`,
+    ...nKeys.filter((k) => parseNutriKey(k)?.athleteId === id),
+    ...ciKeys.filter((k) => parseCheckinKey(k)?.athleteId === id),
+    ...mKeys, ...paKeys, ...phKeys, ...pushKeys,
+    `rm/${id}`, `plan/${id}`, `nut/${id}`, `bm/${id}`, `pay/${id}`,
   ];
   await deleteKeys(theirs);
   await deleteKeys([...aKeys, `pin/${id}`]);
@@ -238,11 +245,119 @@ async function deleteAthleteData(id) {
 }
 
 // Datos que quedaron sin cliente (por ejemplo, tras un error a mitad de camino).
-const ORPHAN_PREFIXES = ['pin/', 'pa/', 'rm/', 'plan/', 'pd/', 's/', 'p/'];
+const ORPHAN_PREFIXES = ['pin/', 'pa/', 'rm/', 'plan/', 'pd/', 's/', 'p/', 'n/', 'ci/', 'nut/', 'bm/', 'ph/', 'pay/', 'push/'];
 function idFromKey(k) {
-  let m = /^(?:pin|rm|plan)\/([a-z0-9]{4,16})$/.exec(k) || /^pa\/([a-z0-9]{4,16})\//.exec(k) || /^pd\/([a-z0-9]{4,16})~/.exec(k);
+  if (k.startsWith('push/coach/')) return null;
+  let m = /^(?:pin|rm|plan|nut|bm|pay)\/([a-z0-9]{4,16})$/.exec(k) || /^(?:pa|ph|push)\/([a-z0-9]{4,16})\//.exec(k) || /^pd\/([a-z0-9]{4,16})~/.exec(k);
   if (m) return m[1];
-  return parseSessionKey(k)?.athleteId || parsePrKey(k)?.athleteId || null;
+  return parseSessionKey(k)?.athleteId || parsePrKey(k)?.athleteId || parseNutriKey(k)?.athleteId || parseCheckinKey(k)?.athleteId || null;
+}
+
+// ---------------------------------------------------------------- videos de técnica
+function safeUrl(v) {
+  const t = str(v, 300);
+  if (!t) return '';
+  try {
+    const u = new URL(t);
+    return u.protocol === 'https:' ? u.toString() : '';
+  } catch { return ''; }
+}
+
+// ---------------------------------------------------------------- nutrición
+const NUT_OBJ = ['VOLUMEN', 'DEFINICIÓN', 'MANTENIMIENTO', 'RECOMPOSICIÓN'];
+const intIn = (v, min, max, def = 0) => { const x = Math.round(Number(v)); return Number.isFinite(x) && x >= min && x <= max ? x : def; };
+function sanitizeNutri(p) {
+  const seen = new Set();
+  const comidas = arr(p?.comidas, 8).map((c) => {
+    let id = EX_RE.test(c?.id || '') && !seen.has(c.id) ? c.id : newId();
+    while (seen.has(id)) id = newId();
+    seen.add(id);
+    return {
+      id,
+      nombre: str(c?.nombre, 40),
+      hora: str(c?.hora, 12),
+      items: arr(c?.items, 15).map((i) => ({ texto: str(i?.texto, 100), alt: str(i?.alt, 100) })).filter((i) => i.texto),
+      nota: str(c?.nota, 200),
+    };
+  }).filter((c) => c.nombre || c.items.length);
+  if (!comidas.length) throw new HttpError(400, 'EMPTY_NUTRI', 'Agrega al menos una comida');
+  const objetivo = str(p?.objetivo, 20).toUpperCase();
+  const agua = Math.round(Math.min(8, Math.max(0, Number(p?.agua) || 0)) * 10) / 10;
+  const c = obj(p?.calc);
+  return {
+    objetivo: NUT_OBJ.includes(objetivo) ? objetivo : '',
+    kcal: intIn(p?.kcal, 0, 8000), proteina: intIn(p?.proteina, 0, 600), carbos: intIn(p?.carbos, 0, 1500), grasas: intIn(p?.grasas, 0, 500),
+    agua,
+    comidas,
+    suplementos: arr(p?.suplementos, 12).map((x) => str(x, 80)).filter(Boolean),
+    mercado: arr(p?.mercado, 80).map((x) => str(x, 60)).filter(Boolean),
+    notas: str(p?.notas, 600),
+    calc: { peso: intIn(c.peso, 0, 400), estatura: intIn(c.estatura, 0, 250), edad: intIn(c.edad, 0, 110), actividad: Math.min(2.5, Math.max(0, Number(c.actividad) || 0)) },
+    updatedAt: Date.now(),
+  };
+}
+const vasosMeta = (nut) => Math.round((nut?.agua || 0) * 4); // vasos de 250 ml
+
+// ---------------------------------------------------------------- cuerpo
+const MEDIDAS = { peso: [20, 400], cintura: [30, 250], cadera: [30, 250], pecho: [30, 250], brazo: [10, 100], pierna: [20, 150], grasa: [2, 70] };
+function sanitizeBodyEntry(e) {
+  const out = { date: e?.date };
+  let any = false;
+  for (const [k, [min, max]] of Object.entries(MEDIDAS)) {
+    const v = Number(e?.[k]);
+    if (e?.[k] !== '' && e?.[k] != null && Number.isFinite(v) && v >= min && v <= max) { out[k] = Math.round(v * 10) / 10; any = true; }
+  }
+  out.nota = str(e?.nota, 120);
+  return any ? out : null;
+}
+const FOTO_ANGLES = ['frente', 'perfil', 'espalda'];
+function imageType(buf) {
+  const b = new Uint8Array(buf.slice(0, 12));
+  if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image/jpeg';
+  if (String.fromCharCode(...b.slice(0, 4)) === 'RIFF' && String.fromCharCode(...b.slice(8, 12)) === 'WEBP') return 'image/webp';
+  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return 'image/png';
+  return null;
+}
+
+// ---------------------------------------------------------------- check-in semanal
+const scale = (v) => intIn(v, 1, 5, 0);
+function sanitizeCheckin(b) {
+  const peso = Number(b?.peso);
+  return {
+    peso: Number.isFinite(peso) && peso >= 20 && peso <= 400 ? Math.round(peso * 10) / 10 : null,
+    sueno: scale(b?.sueno), energia: scale(b?.energia), estres: scale(b?.estres), hambre: scale(b?.hambre), nutricion: scale(b?.nutricion),
+    molestias: str(b?.molestias, 300),
+    comentario: str(b?.comentario, 500),
+  };
+}
+
+// ---------------------------------------------------------------- mensualidades
+function sanitizePay(b, prev) {
+  return {
+    plan: str(b?.plan, 40) || prev?.plan || 'Mensualidad',
+    valor: intIn(b?.valor, 0, 100_000_000, prev?.valor || 0),
+    ciclo: intIn(b?.ciclo, 1, 365, prev?.ciclo || 30),
+    proximoPago: isISODate(b?.proximoPago) ? b.proximoPago : prev?.proximoPago || null,
+    telefono: str(b?.telefono, 20).replace(/[^\d+]/g, '') || (b?.telefono === '' ? '' : prev?.telefono || ''),
+    nota: str(b?.nota, 200),
+    historial: Array.isArray(prev?.historial) ? prev.historial.slice(-60) : [],
+    updatedAt: Date.now(),
+  };
+}
+
+// ---------------------------------------------------------------- biblioteca de ejercicios
+async function upsertLibrary(plan) {
+  const lib = (await db().get('lib/exercises', { type: 'json' })) || { items: [] };
+  const map = new Map(arr(lib.items, 600).map((i) => [nameKey(i.nombre), i]));
+  let changed = false;
+  for (const d of plan.dias) for (const sec of d.secciones) for (const e of sec.ejercicios) {
+    if (!e.video && !e.alt) continue;
+    const k = nameKey(e.nombre);
+    const cur = map.get(k);
+    const next = { nombre: e.nombre, video: e.video || cur?.video || '', alt: e.alt || cur?.alt || '' };
+    if (!cur || cur.video !== next.video || cur.alt !== next.alt) { map.set(k, next); changed = true; }
+  }
+  if (changed) await db().setJSON('lib/exercises', { items: [...map.values()].slice(-500), updatedAt: Date.now() });
 }
 
 // ---------------------------------------------------------------- router
@@ -310,9 +425,11 @@ export default async function handler(req) {
       await requireMember();
       const today = dateParam('date');
       if (!dateInWindow(today, 2, 1)) throw new HttpError(400, 'BAD_DATE', 'Revisa la fecha y hora de tu teléfono');
-      const [roster, sKeys, pKeys, mKeys, planKeys] = await Promise.all([
-        getRoster(), listKeys('s/'), listKeys('p/'), listKeys('pd/'), listKeys('plan/'),
+      const [roster, sKeys, pKeys, mKeys, planKeys, nKeys, ciKeys, rtKeys] = await Promise.all([
+        getRoster(), listKeys('s/'), listKeys('p/'), listKeys('pd/'), listKeys('plan/'), listKeys('n/'), listKeys('ci/'), listKeys('rt/'),
       ]);
+      const retos = rtKeys.map(parseRetoKey).filter(Boolean);
+      const retoInfo = retos.some((r) => r.month === today.slice(0, 7)) ? await db().get(`retodoc/${today.slice(0, 7)}`, { type: 'json' }) : null;
       const masks = {};
       for (const k of mKeys) {
         const m = parseMaskKey(k);
@@ -327,6 +444,10 @@ export default async function handler(req) {
         planIds: planKeys.map((k) => k.slice(5)).filter((id) => ID_RE.test(id)),
         meId: isCoach ? null : aid,
         withHistory: isCoach,
+        nutri: nKeys.map(parseNutriKey).filter(Boolean),
+        checkins: ciKeys.map(parseCheckinKey).filter(Boolean),
+        retos,
+        retoInfo: retoInfo ? { titulo: retoInfo.titulo, descripcion: retoInfo.descripcion, premio: retoInfo.premio } : null,
       });
       // Los pesos de cada quien son privados: el podio de clientes solo ve el avance.
       if (!isCoach) {
@@ -445,6 +566,7 @@ export default async function handler(req) {
         const history = await maskHistory(athleteId);
         const last = history[history.length - 1];
         await db().setJSON(`plan/${athleteId}`, plan);
+        await upsertLibrary(plan);
         if (!last) await db().set(maskKey(athleteId, mask, HISTORY_START), '1');
         else if (last.mask !== mask) {
           if (last.from >= from) {
@@ -544,6 +666,275 @@ export default async function handler(req) {
         if (prKeyToWrite) await db().set(prKeyToWrite, '1');
         if (undoKeys.length) await deleteKeys(undoKeys);
         return json({ doc, pr: !!prKeyToWrite });
+      }
+    }
+
+    // ---- plan de alimentación (lo arma el coach)
+    if (route === 'nutri') {
+      const athleteId = q.get('athleteId');
+      await requireSelf(athleteId);
+      if (method === 'GET') return json({ nutri: (await db().get(`nut/${athleteId}`, { type: 'json' })) || null });
+      requireCoach();
+      await mustExist(athleteId);
+      if (method === 'PUT') {
+        const nutri = sanitizeNutri(await readBody(req));
+        await db().setJSON(`nut/${athleteId}`, nutri);
+        return json({ nutri });
+      }
+      if (method === 'DELETE') { await db().delete(`nut/${athleteId}`); return json({ ok: true }); }
+    }
+
+    // ---- registro diario de comidas y agua
+    if (route === 'nutrilog') {
+      const athleteId = q.get('athleteId');
+      await requireSelf(athleteId);
+      const date = dateParam();
+      const old = await listKeys(nutriPrefix(date, athleteId));
+      const latest = old.map(parseNutriKey).filter(Boolean).sort((a, b) => b.ts - a.ts)[0];
+      if (method === 'GET') return json({ log: latest ? await db().get(latest.key, { type: 'json' }) : null });
+      if (method === 'PUT') {
+        if (!dateInWindow(date, 3, 1)) throw new HttpError(400, 'BAD_DATE', 'Ese día ya no se puede registrar');
+        await mustExist(athleteId);
+        const body = await readBody(req);
+        const nut = await db().get(`nut/${athleteId}`, { type: 'json' });
+        if (!nut) throw new HttpError(404, 'NO_NUTRI', 'Todavía no tienes plan de alimentación');
+        const ids = new Set(nut.comidas.map((c) => c.id));
+        const meals = Object.create(null);
+        for (const [id, v] of Object.entries(obj(body.meals))) if (ids.has(id) && v === true) meals[id] = true;
+        const log = {
+          date, athleteId, meals,
+          vasos: intIn(body.vasos, 0, 40, 0),
+          done: Object.keys(meals).length, total: nut.comidas.length, meta: vasosMeta(nut),
+          ts: Date.now(),
+        };
+        const key = nutriKey(log);
+        await db().setJSON(key, log);
+        await deleteKeys(old.filter((k) => k !== key));
+        return json({ log });
+      }
+    }
+
+    // ---- medidas y fotos de progreso (privadas: cliente y coach)
+    if (route === 'body') {
+      const athleteId = q.get('athleteId');
+      await requireSelf(athleteId);
+      const doc = (await db().get(`bm/${athleteId}`, { type: 'json' })) || { entries: [], fotos: [] };
+      if (method === 'GET') return json({ body: doc });
+      await mustExist(athleteId);
+      if (method === 'PUT') {
+        const b = await readBody(req);
+        const date = b?.entry?.date;
+        if (!isISODate(date) || !dateInWindow(date, 400, 1)) throw new HttpError(400, 'BAD_DATE');
+        const entry = sanitizeBodyEntry(b.entry);
+        if (!entry) throw new HttpError(400, 'EMPTY_ENTRY', 'Escribe al menos una medida');
+        doc.entries = arr(doc.entries, 500).filter((e) => e.date !== date).concat([entry]).sort((x, y) => (x.date < y.date ? -1 : 1)).slice(-400);
+        await db().setJSON(`bm/${athleteId}`, doc);
+        return json({ body: doc });
+      }
+      if (method === 'DELETE') {
+        const date = dateParam();
+        doc.entries = arr(doc.entries, 500).filter((e) => e.date !== date);
+        await db().setJSON(`bm/${athleteId}`, doc);
+        return json({ body: doc });
+      }
+    }
+    if (route === 'photo') {
+      const athleteId = q.get('athleteId');
+      await requireSelf(athleteId);
+      const pid = q.get('id');
+      if (method === 'GET') {
+        if (!ID_RE.test(pid || '')) throw new HttpError(400, 'BAD_PHOTO');
+        const res = await db().getWithMetadata(`ph/${athleteId}/${pid}`, { type: 'arrayBuffer' });
+        if (!res) throw new HttpError(404, 'NOT_FOUND');
+        return new Response(res.data, { status: 200, headers: { 'content-type': res.metadata?.type || 'image/jpeg', 'cache-control': 'private, max-age=86400' } });
+      }
+      await mustExist(athleteId);
+      const doc = (await db().get(`bm/${athleteId}`, { type: 'json' })) || { entries: [], fotos: [] };
+      if (method === 'PUT') {
+        const date = q.get('date');
+        const angle = FOTO_ANGLES.includes(q.get('angle')) ? q.get('angle') : 'frente';
+        if (!isISODate(date) || !dateInWindow(date, 400, 1)) throw new HttpError(400, 'BAD_DATE');
+        if (arr(doc.fotos, 200).length >= 90) throw new HttpError(409, 'TOO_MANY_PHOTOS', 'Llegaste al máximo de fotos. Borra algunas viejas.');
+        const buf = await req.arrayBuffer();
+        if (buf.byteLength > 900_000) throw new HttpError(413, 'TOO_LARGE', 'La foto es muy pesada');
+        const type = imageType(buf);
+        if (!type) throw new HttpError(400, 'BAD_IMAGE', 'Formato de imagen no válido');
+        const foto = { id: newId(), date, angle, ts: Date.now() };
+        await db().set(`ph/${athleteId}/${foto.id}`, buf, { metadata: { type } });
+        doc.fotos = arr(doc.fotos, 200).concat([foto]);
+        await db().setJSON(`bm/${athleteId}`, doc);
+        return json({ foto, body: doc }, 201);
+      }
+      if (method === 'DELETE') {
+        if (!ID_RE.test(pid || '')) throw new HttpError(400, 'BAD_PHOTO');
+        await db().delete(`ph/${athleteId}/${pid}`);
+        doc.fotos = arr(doc.fotos, 200).filter((f) => f.id !== pid);
+        await db().setJSON(`bm/${athleteId}`, doc);
+        return json({ body: doc });
+      }
+    }
+
+    // ---- check-in semanal (el coach puede responder)
+    if (route === 'checkins' && method === 'GET') {
+      const athleteId = q.get('athleteId');
+      if (athleteId) {
+        await requireSelf(athleteId);
+        const keys = (await listKeys('ci/')).map(parseCheckinKey).filter((c) => c && c.athleteId === athleteId)
+          .sort((a, b) => (a.week < b.week ? 1 : -1)).slice(0, 26);
+        const docs = await Promise.all(keys.map((c) => db().get(c.key, { type: 'json' })));
+        return json({ checkins: docs.filter(Boolean) });
+      }
+      requireCoach();
+      const week = dateParam('week');
+      const keys = (await listKeys(`ci/${weekStart(week)}/`)).map(parseCheckinKey).filter(Boolean);
+      const docs = await Promise.all(keys.map((c) => db().get(c.key, { type: 'json' })));
+      return json({ checkins: docs.filter(Boolean) });
+    }
+    if (route === 'checkin') {
+      const athleteId = q.get('athleteId');
+      await requireSelf(athleteId);
+      const date = dateParam();
+      const week = weekStart(date);
+      const old = (await listKeys(`ci/${week}/`)).filter((k) => parseCheckinKey(k)?.athleteId === athleteId);
+      const prev = old.length ? await db().get(old[0], { type: 'json' }) : null;
+      if (method === 'PUT') {
+        if (!dateInWindow(date, 2, 1)) throw new HttpError(400, 'BAD_DATE', 'Revisa la fecha de tu teléfono');
+        await mustExist(athleteId);
+        const ts = Date.now();
+        const doc = { week, athleteId, ...sanitizeCheckin(await readBody(req)), respuesta: prev?.respuesta || null, ts };
+        const key = checkinKey(week, athleteId, ts);
+        await db().setJSON(key, doc);
+        await deleteKeys(old.filter((k) => k !== key));
+        return json({ checkin: doc });
+      }
+      if (method === 'POST' && parts[1] === 'reply') {
+        requireCoach();
+        if (!prev) throw new HttpError(404, 'NOT_FOUND', 'Ese check-in ya no existe');
+        const body = await readBody(req);
+        prev.respuesta = str(body.texto, 600) ? { texto: str(body.texto, 600), ts: Date.now() } : null;
+        await db().setJSON(old[0], prev);
+        return json({ checkin: prev });
+      }
+    }
+
+    // ---- biblioteca de ejercicios (videos y alternativas)
+    if (route === 'library' && method === 'GET') {
+      await requireMember();
+      return json({ items: ((await db().get('lib/exercises', { type: 'json' })) || { items: [] }).items });
+    }
+
+    // ---- reto del mes
+    if (route === 'reto') {
+      const month = q.get('month');
+      if (!/^20\d{2}-(0[1-9]|1[0-2])$/.test(month || '')) throw new HttpError(400, 'BAD_MONTH');
+      if (method === 'GET') {
+        await requireMember();
+        const key = (await listKeys(`rt/${month}~`))[0];
+        const info = key ? await db().get(`retodoc/${month}`, { type: 'json' }) : null;
+        return json({ reto: key ? { ...parseRetoKey(key), ...(info || {}) } : null });
+      }
+      requireCoach();
+      const old = await listKeys(`rt/${month}~`);
+      if (method === 'PUT') {
+        const b = await readBody(req);
+        if (!RETO_TIPOS[b.tipo]) throw new HttpError(400, 'BAD_RETO', 'Elige qué se mide en el reto');
+        const meta = intIn(b.meta, 1, 100, 0);
+        if (!meta) throw new HttpError(400, 'BAD_RETO', 'La meta debe estar entre 1 y 100');
+        const info = { titulo: str(b.titulo, 60) || 'Reto del mes', descripcion: str(b.descripcion, 200), premio: str(b.premio, 100) };
+        const key = retoKey(month, b.tipo, meta);
+        await db().setJSON(`retodoc/${month}`, info);
+        await db().set(key, '1');
+        await deleteKeys(old.filter((k) => k !== key));
+        return json({ reto: { month, tipo: b.tipo, meta, ...info } });
+      }
+      if (method === 'DELETE') {
+        await deleteKeys([...old, `retodoc/${month}`]);
+        return json({ ok: true });
+      }
+    }
+
+    // ---- mensualidades (solo el coach; el cliente ve su fecha de pago)
+    if (route === 'pay') {
+      const athleteId = q.get('athleteId');
+      if (method === 'GET' && !athleteId) {
+        requireCoach();
+        const keys = await listKeys('pay/');
+        const docs = await Promise.all(keys.map(async (k) => ({ athleteId: k.slice(4), ...((await db().get(k, { type: 'json' })) || {}) })));
+        return json({ pagos: docs });
+      }
+      await requireSelf(athleteId);
+      const prev = await db().get(`pay/${athleteId}`, { type: 'json' });
+      if (method === 'GET') {
+        if (isCoach) return json({ pago: prev || null });
+        return json({ pago: prev ? { plan: prev.plan, proximoPago: prev.proximoPago } : null });
+      }
+      requireCoach();
+      await mustExist(athleteId);
+      if (method === 'PUT') {
+        const pago = sanitizePay(await readBody(req), prev);
+        await db().setJSON(`pay/${athleteId}`, pago);
+        return json({ pago });
+      }
+      if (method === 'POST' && parts[1] === 'registrar') {
+        const b = await readBody(req);
+        const pago = sanitizePay({}, prev || {});
+        const fecha = isISODate(b.fecha) ? b.fecha : serverToday();
+        const valor = intIn(b.valor, 0, 100_000_000, pago.valor);
+        pago.historial = pago.historial.concat([{ fecha, valor, nota: str(b.nota, 120), ts: Date.now() }]).slice(-60);
+        const base = pago.proximoPago && pago.proximoPago > fecha ? pago.proximoPago : fecha;
+        pago.proximoPago = addDays(base, pago.ciclo);
+        await db().setJSON(`pay/${athleteId}`, pago);
+        return json({ pago });
+      }
+      if (method === 'DELETE') { await db().delete(`pay/${athleteId}`); return json({ ok: true }); }
+    }
+
+    // ---- comentarios de los clientes en sus ejercicios (para el coach)
+    if (route === 'feedback' && method === 'GET') {
+      requireCoach();
+      const days = intIn(q.get('days'), 1, 14, 7);
+      const from = addDays(serverToday(), -days);
+      const keys = (await listKeys('s/')).map(parseSessionKey).filter((x) => x && x.date >= from);
+      const latest = new Map();
+      for (const x of keys) { const k = x.date + x.athleteId; if (!latest.has(k) || latest.get(k).ts < x.ts) latest.set(k, x); }
+      const docs = await Promise.all([...latest.values()].map((x) => db().get(x.key, { type: 'json' })));
+      const notas = [];
+      for (const d of docs) {
+        if (!d) continue;
+        for (const e of Object.values(d.ex || {})) if (e.nota) notas.push({ date: d.date, athleteId: d.athleteId, ejercicio: e.nombre, nota: e.nota, ts: d.ts });
+      }
+      return json({ notas: notas.sort((a, b) => b.ts - a.ts).slice(0, 100) });
+    }
+
+    // ---- notificaciones push
+    if (route === 'push') {
+      if (parts[1] === 'key' && method === 'GET') return json({ key: vapidPublicKey() });
+      if (!isCoach) await requireMember();
+      const who = isCoach ? 'coach' : aid;
+      if (method === 'POST' && !parts[1]) {
+        const body = await readBody(req);
+        const sub = obj(body.subscription);
+        const endpoint = str(sub.endpoint, 1000);
+        if (!/^https:\/\//.test(endpoint) || !sub.keys || typeof sub.keys.p256dh !== 'string' || typeof sub.keys.auth !== 'string') {
+          throw new HttpError(400, 'BAD_SUBSCRIPTION');
+        }
+        const existing = await listKeys(`push/${who}/`);
+        if (existing.length >= 6) await deleteKeys(existing.slice(0, existing.length - 5));
+        await db().setJSON(subKey(who, endpoint), { endpoint, keys: { p256dh: str(sub.keys.p256dh, 200), auth: str(sub.keys.auth, 100) }, ts: Date.now() });
+        return json({ ok: true }, 201);
+      }
+      if (method === 'DELETE') {
+        const body = await readBody(req);
+        await db().delete(subKey(who, str(body.endpoint, 1000)));
+        return json({ ok: true });
+      }
+      if (method === 'POST' && parts[1] === 'test') {
+        const sent = await sendToSubscriptions(db(), who, { title: 'Team Carlos', body: 'Así te van a llegar los recordatorios 💪', url: '/' });
+        return json({ ok: true, sent });
+      }
+      if (method === 'POST' && parts[1] === 'run') {
+        requireCoach();
+        return json(await runReminders(db(), { force: true }));
       }
     }
 

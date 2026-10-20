@@ -4,7 +4,8 @@
   "type": "module",
   "description": "Team Carlos (TMC) · app de entrenamiento personalizado en gimnasio",
   "dependencies": {
-    "@netlify/blobs": "^11.1.5"
+    "@netlify/blobs": "^11.1.5",
+    "web-push": "^3.6.7"
   },
   "engines": {
     "node": ">=20"

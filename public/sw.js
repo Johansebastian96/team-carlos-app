@@ -3,7 +3,7 @@
 // - El HTML va primero a la red (para que las actualizaciones lleguen de inmediato)
 //   y usa la caché solo si no hay conexión.
 // - Imágenes, íconos y fuentes: caché primero, refrescando en segundo plano.
-const CACHE_NAME = 'team-carlos-v3';
+const CACHE_NAME = 'team-carlos-v5';
 const PRECACHE_URLS = ['./', './index.html', './manifest.json', './assets/logo-mark.png'];
 
 self.addEventListener('install', (event) => {
@@ -54,6 +54,36 @@ self.addEventListener('fetch', (event) => {
         })
         .catch(() => cached);
       return cached || network;
+    })
+  );
+});
+
+// ---- recordatorios push
+self.addEventListener('push', (event) => {
+  let d = {};
+  try { d = event.data ? event.data.json() : {}; } catch (e) { d = { body: event.data ? event.data.text() : '' }; }
+  event.waitUntil(self.registration.showNotification(d.title || 'Team Carlos', {
+    body: d.body || '',
+    icon: './assets/icon-192.png',
+    badge: './assets/favicon-64.png',
+    tag: d.tag || 'tmc',
+    renotify: !!d.tag,
+    data: { url: d.url || '/' },
+  }));
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const url = (event.notification.data && event.notification.data.url) || '/';
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
+      for (const c of list) {
+        if ('focus' in c) {
+          if ('navigate' in c) c.navigate(url).catch(() => {});
+          return c.focus();
+        }
+      }
+      return self.clients.openWindow(url);
     })
   );
 });
