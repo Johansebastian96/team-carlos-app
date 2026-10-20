@@ -225,6 +225,7 @@
     app.classList.toggle('active', which === 'app');
     coach.classList.toggle('active', which === 'coach');
     logoutBtn.classList.toggle('show', which === 'app' || which === 'coach');
+    document.body.classList.toggle('has-nav', which === 'app' || which === 'coach');
     updateRestFloat();
     window.scrollTo(0, 0);
   }

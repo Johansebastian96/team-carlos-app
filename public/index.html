@@ -1085,6 +1085,11 @@
   .hero-title{ font-size:clamp(26px, 9vw, 36px); overflow-wrap:anywhere; }
   body.resting #app{ padding-bottom:calc(160px + env(safe-area-inset-bottom, 0px)); }
   .logout-btn{ position:absolute; }
+  /* Distintivo de Netlify (plan gratis): se mantiene visible, pero encima del menú para no tapar botones */
+  body.has-nav #nl-badge-frame{ bottom:calc(68px + env(safe-area-inset-bottom, 0px)) !important; }
+  body.has-nav.resting #nl-badge-frame{ bottom:calc(142px + env(safe-area-inset-bottom, 0px)) !important; }
+  body.has-nav #app, body.has-nav #coach-panel{ padding-bottom:calc(150px + env(safe-area-inset-bottom, 0px)); }
+  body.has-nav.resting #app{ padding-bottom:calc(220px + env(safe-area-inset-bottom, 0px)); }
 </style>
 </head>
 <body>
@@ -1394,6 +1399,6 @@
   </nav>
 </div>
 
-<script src="./app.js?v=da3d0f4568"></script>
+<script src="./app.js?v=c098f2c930"></script>
 </body>
 </html>
