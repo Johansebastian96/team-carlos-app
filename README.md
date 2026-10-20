@@ -28,13 +28,23 @@ En vivo: <https://team-carlos-app.netlify.app>
 - **Planes · Nutrición:** calculadora de calorías (Mifflin-St Jeor + actividad + objetivo) que llena los macros y el agua, editor de comidas con alternativas, suplementos, lista de mercado y notas. Incluye una plantilla TMC con comida colombiana.
 - **Seguimiento:** cumplimiento semana a semana, check-ins de la semana con respuesta, peso/medidas/fotos de cada cliente y los comentarios que dejan en sus ejercicios.
 - **Pagos:** valor, ciclo y fecha de pago de cada cliente, estado (al día / por vencer / vencida), registro de pagos, cobrado en el mes y recordatorio por **WhatsApp** con un toque.
+- **Mis rutinas:** biblioteca de rutinas propias (hasta 80). Se crean desde cero, desde la plantilla TMC, importándolas o guardando el plan de un cliente, y se **asignan a varios clientes a la vez** (cada uno conserva su edad y su objetivo).
+- **Importar rutinas:** convierte en plan lo que Carlos ya tiene: filas copiadas de **Excel o Google Sheets**, archivos `.xlsx` / `.csv`, texto de **WhatsApp** o notas, **PDF** y **fotos** (lectura de texto en el propio navegador, sin enviar la imagen a ningún servicio). Muestra una vista previa antes de reemplazar el plan o solo los días importados.
+
+**Versión de escritorio del coach** (computador, pantallas de 1100 px o más)
+- Menú lateral, dashboard en dos columnas y **tabla de clientes editable**: nombre, género, próximo pago, valor y PIN se cambian ahí mismo; se ordena, se busca y se descarga para Excel.
+- **Planes** con el editor y, a la derecha, la **vista del cliente** en vivo (como lo ve en su celular). En pantallas de 1500 px o más se agrega la lista de clientes a la izquierda.
+- Atajos: **Ctrl/Cmd + S** publica el plan o la nutrición; **Enter** en un ejercicio pasa al siguiente o agrega uno nuevo.
+- En el celular la app se ve igual que antes.
 
 ## Cómo está hecha
 
 | Parte | Archivo |
 |---|---|
 | Pantallas y estilos | `public/index.html` |
-| Lógica de la app | `public/app.js` (al cambiarlo, actualiza `?v=` en `index.html`) |
+| Lógica de la app | `public/app.js` |
+| Importador de rutinas (texto, Excel, CSV, PDF, fotos) | `public/import.js` (se carga solo cuando se usa) |
+| Lectura de PDF y de fotos, alojadas en el mismo sitio | `public/vendor/pdfjs` (pdf.js 3.11.174, Apache-2.0) y `public/vendor/tesseract` (Tesseract.js 5.1.1 con su núcleo y el idioma español, Apache-2.0) |
 | Instalación en el celular | `public/manifest.json`, `public/sw.js` |
 | API (Netlify Functions) | `netlify/functions/api.mjs` |
 | Lógica de rachas, puntos, retos y logros (sin red) | `src/core.mjs` |
@@ -65,11 +75,16 @@ Para cambiar una, edita la variable en Netlify y vuelve a publicar: las sesiones
 - **Privacidad del podio:** los clientes ven el porcentaje de mejora de los PRs, no los kilos de los demás.
 - **Fotos y medidas:** solo las ven el cliente y el coach. Las fotos se reducen en el teléfono antes de subirse y se descargan con la sesión (no tienen enlace público).
 - **Pagos:** el cliente solo ve su propia fecha de pago; los valores los ve solo el coach.
-- **Cabeceras de seguridad:** CSP, anti-iframe y nosniff, configuradas en `netlify.toml`.
+- **Mis rutinas:** solo el coach las ve, crea y asigna.
+- **Importar:** los archivos (Excel, PDF, fotos) se leen en el navegador del coach; no se suben al servidor ni a servicios externos. La descarga para Excel neutraliza textos que Excel ejecutaría como fórmula.
+- **Cabeceras de seguridad:** CSP, anti-iframe y nosniff, configuradas en `netlify.toml` (la CSP permite WebAssembly y workers propios solo para la lectura de fotos).
 
 ## Desarrollo
 
 ```bash
 npm install
-netlify dev   # sirve public/ y la API en http://localhost:8888
+netlify dev              # sirve public/ y la API en http://localhost:8888
+node scripts/stamp.mjs   # después de editar app.js o import.js: actualiza los ?v= para que los celulares bajen la versión nueva
 ```
+
+Las licencias de pdf.js y Tesseract.js están junto a sus archivos en `public/vendor/`. El Excel se lee con un lector propio (ZIP + XML del navegador), sin librerías externas.

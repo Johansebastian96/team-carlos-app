@@ -347,6 +347,27 @@ function sanitizePay(b, prev) {
   };
 }
 
+const maskHistory = async (id) => (await listKeys(`pd/${id}~`)).map(parseMaskKey).filter(Boolean)
+  .sort((a, b) => (a.from < b.from ? -1 : 1));
+// Guarda el plan de un cliente. Los días nuevos aplican desde hoy; el historial anterior conserva su plan.
+async function writePlan(athleteId, plan, reqDate) {
+  const mask = planMask(plan);
+  const from = dateInWindow(reqDate, 2, 1) ? reqDate : serverToday();
+  const history = await maskHistory(athleteId);
+  const last = history[history.length - 1];
+  await db().setJSON(`plan/${athleteId}`, plan);
+  if (!last) await db().set(maskKey(athleteId, mask, HISTORY_START), '1');
+  else if (last.mask !== mask) {
+    if (last.from >= from) {
+      await db().set(maskKey(athleteId, mask, last.from), '1');
+      await db().delete(last.key);
+    } else {
+      await db().set(maskKey(athleteId, mask, from), '1');
+    }
+  }
+}
+const MAX_RUTINAS = 80;
+
 // ---------------------------------------------------------------- biblioteca de ejercicios
 async function upsertLibrary(plan) {
   const lib = (await db().get('lib/exercises', { type: 'json' })) || { items: [] };
@@ -414,8 +435,6 @@ export default async function handler(req) {
       if (!a) throw new HttpError(404, 'ATHLETE_NOT_FOUND', 'Ese cliente ya no existe');
       return { roster, athlete: a };
     };
-    const maskHistory = async (id) => (await listKeys(`pd/${id}~`)).map(parseMaskKey).filter(Boolean)
-      .sort((a, b) => (a.from < b.from ? -1 : 1));
 
     // ---- lista de nombres (para "¿quién eres?")
     if (route === 'roster' && method === 'GET') {
@@ -427,8 +446,9 @@ export default async function handler(req) {
       await requireMember();
       const today = dateParam('date');
       if (!dateInWindow(today, 2, 1)) throw new HttpError(400, 'BAD_DATE', 'Revisa la fecha y hora de tu teléfono');
-      const [roster, sKeys, pKeys, mKeys, planKeys, nKeys, ciKeys, rtKeys] = await Promise.all([
+      const [roster, sKeys, pKeys, mKeys, planKeys, nKeys, ciKeys, rtKeys, nutKeys] = await Promise.all([
         getRoster(), listKeys('s/'), listKeys('p/'), listKeys('pd/'), listKeys('plan/'), listKeys('n/'), listKeys('ci/'), listKeys('rt/'),
+        isCoach ? listKeys('nut/') : Promise.resolve([]),
       ]);
       const retos = rtKeys.map(parseRetoKey).filter(Boolean);
       const retoInfo = retos.some((r) => r.month === today.slice(0, 7)) ? await db().get(`retodoc/${today.slice(0, 7)}`, { type: 'json' }) : null;
@@ -459,6 +479,7 @@ export default async function handler(req) {
         state.alltime = state.alltime.map((x) => (x.athleteId === aid ? x
           : { athleteId: x.athleteId, points: x.points, days: x.days, streak: x.streak, prs: x.prs, weeks: x.weeks }));
       }
+      if (isCoach) state.coach.withNutri = nutKeys.map((k) => k.slice(4)).filter((id) => ID_RE.test(id));
       return json({ ...state, role, aid: isCoach ? null : aid });
     }
 
@@ -564,23 +585,8 @@ export default async function handler(req) {
       await mustExist(athleteId);
       if (method === 'PUT') {
         const plan = sanitizePlan(await readBody(req));
-        const mask = planMask(plan);
-        // Los días nuevos aplican desde hoy; el historial anterior conserva su plan.
-        const reqDate = q.get('date');
-        const from = dateInWindow(reqDate, 2, 1) ? reqDate : serverToday();
-        const history = await maskHistory(athleteId);
-        const last = history[history.length - 1];
-        await db().setJSON(`plan/${athleteId}`, plan);
+        await writePlan(athleteId, plan, q.get('date'));
         await upsertLibrary(plan);
-        if (!last) await db().set(maskKey(athleteId, mask, HISTORY_START), '1');
-        else if (last.mask !== mask) {
-          if (last.from >= from) {
-            await db().set(maskKey(athleteId, mask, last.from), '1');
-            await db().delete(last.key);
-          } else {
-            await db().set(maskKey(athleteId, mask, from), '1');
-          }
-        }
         return json({ plan });
       }
       if (method === 'DELETE') {
@@ -819,6 +825,64 @@ export default async function handler(req) {
         prev.respuesta = str(body.texto, 600) ? { texto: str(body.texto, 600), ts: Date.now() } : null;
         await db().setJSON(old[0], prev);
         return json({ checkin: prev });
+      }
+    }
+
+    // ---- Mis rutinas: planes guardados por el coach para asignar a varios clientes
+    if (route === 'rutinas') {
+      requireCoach();
+      if (method === 'GET') {
+        const keys = await listKeys('tpl/');
+        const docs = (await Promise.all(keys.map((k) => db().get(k, { type: 'json' })))).filter(Boolean);
+        return json({ rutinas: docs.sort((a, b) => b.updatedAt - a.updatedAt) });
+      }
+      if (method === 'PUT') {
+        const b = await readBody(req);
+        const nombre = str(b.nombre, 60);
+        if (!nombre) throw new HttpError(400, 'NO_NAME', 'Ponle un nombre a la rutina');
+        let id = q.get('id');
+        const exists = ID_RE.test(id || '') && (await db().get(`tpl/${id}`, { type: 'json' }));
+        if (!exists) {
+          if ((await listKeys('tpl/')).length >= MAX_RUTINAS) throw new HttpError(409, 'TOO_MANY', 'Llegaste al máximo de rutinas guardadas. Borra alguna.');
+          id = newId();
+        }
+        const plan = sanitizePlan(b.plan);
+        delete plan.edad;
+        const doc = { id, nombre, descripcion: str(b.descripcion, 200), plan, createdAt: exists?.createdAt || Date.now(), updatedAt: Date.now() };
+        await db().setJSON(`tpl/${id}`, doc);
+        await upsertLibrary(plan);
+        return json({ rutina: doc });
+      }
+      if (method === 'DELETE') {
+        const id = q.get('id');
+        if (!ID_RE.test(id || '')) throw new HttpError(400, 'BAD_ID');
+        await db().delete(`tpl/${id}`);
+        return json({ ok: true });
+      }
+      if (method === 'POST' && parts[1] === 'asignar') {
+        const b = await readBody(req);
+        const tpl = ID_RE.test(b.id || '') ? await db().get(`tpl/${b.id}`, { type: 'json' }) : null;
+        if (!tpl) throw new HttpError(404, 'NOT_FOUND', 'Esa rutina ya no existe');
+        const ids = [...new Set(arr(b.athleteIds, 100).filter((x) => ID_RE.test(String(x))))];
+        if (!ids.length) throw new HttpError(400, 'NO_ATHLETES', 'Elige al menos un cliente');
+        const roster = new Set((await getRoster()).map((a) => a.id));
+        const todo = ids.filter((id) => roster.has(id));
+        // varios clientes a la vez (de a 6) para no pasarse del tiempo de la función
+        let assigned = 0;
+        for (let k = 0; k < todo.length; k += 6) {
+          await Promise.all(todo.slice(k, k + 6).map(async (id) => {
+            const prev = await db().get(`plan/${id}`, { type: 'json' });
+            const plan = sanitizePlan({
+              ...tpl.plan,
+              edad: prev?.edad || '',
+              objetivo: (b.keepObjetivo !== false && prev?.objetivo) || tpl.plan.objetivo,
+              unidad: prev?.unidad || tpl.plan.unidad, // quien anota en lb sigue en lb
+            });
+            await writePlan(id, plan, b.date);
+            assigned++;
+          }));
+        }
+        return json({ assigned });
       }
     }
 

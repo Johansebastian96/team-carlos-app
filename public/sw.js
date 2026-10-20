@@ -3,7 +3,7 @@
 // - El HTML va primero a la red (para que las actualizaciones lleguen de inmediato)
 //   y usa la caché solo si no hay conexión.
 // - Imágenes, íconos y fuentes: caché primero, refrescando en segundo plano.
-const CACHE_NAME = 'team-carlos-v5';
+const CACHE_NAME = 'team-carlos-v6';
 const PRECACHE_URLS = ['./', './index.html', './manifest.json', './assets/logo-mark.png'];
 
 self.addEventListener('install', (event) => {
@@ -27,6 +27,8 @@ self.addEventListener('fetch', (event) => {
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   if (url.origin === self.location.origin && url.pathname.startsWith('/api/')) return;
+  // lectores de fotos y PDF (pesados): no se guardan en la caché de la app
+  if (url.origin === self.location.origin && url.pathname.startsWith('/vendor/')) return;
 
   const isNavigation = req.mode === 'navigate' || req.destination === 'document';
   if (isNavigation) {

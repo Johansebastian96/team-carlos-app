@@ -226,6 +226,7 @@
     coach.classList.toggle('active', which === 'coach');
     logoutBtn.classList.toggle('show', which === 'app' || which === 'coach');
     document.body.classList.toggle('has-nav', which === 'app' || which === 'coach');
+    document.body.classList.toggle('coach-on', which === 'coach');
     updateRestFloat();
     window.scrollTo(0, 0);
   }
@@ -274,6 +275,7 @@
     S.ne = { athleteId: '', nutri: null, exists: false, dirty: false, loading: false, failed: '' };
     S.pagos = null; S.segBody = null; S.segBodyFor = null; S.segClient = ''; S.segCi = null; S.feedback = null; S.payOpen = null;
     S.retoEdit = false; S.retoDraft = null;
+    S.rutinas = null; S.ct = { q: '', sort: 'name', dir: 1, pin: null }; S.planKind = 'entreno'; S.psQ = '';
     S.nutri = undefined; S.body = undefined; S.checkins = undefined; S.pay = null; S.ciDraft = null; S.ciEdit = false;
     if (!silent) loginError.classList.remove('show');
     showOnly('splash');
@@ -1838,6 +1840,7 @@
   function openModal(title, html, opts) {
     if (modalOpts && modalOpts.cleanup) { try { modalOpts.cleanup(); } catch (e) { /* nada */ } }
     modalOpts = opts || {};
+    $('.modal-card', modal).classList.toggle('wide', !!modalOpts.wide);
     $('#modal-title').textContent = title;
     $('#modal-body').innerHTML = html;
     modal.classList.remove('hidden');
@@ -3030,7 +3033,7 @@
     renderCoachView();
     if (v === 'plan' && S.cstate) return;
     const loads = [loadCoachState()];
-    if (v === 'pagos' || v === 'dashboard') loads.push(loadPagos());
+    if (v === 'pagos' || v === 'dashboard' || v === 'clientes') loads.push(loadPagos());
     try { await Promise.all(loads); if (S.cview === v) renderCoachView(); } catch (e) { if (e.code !== 'NO_SESSION' && !e.stale) toastErr(e); }
   }
   function renderCoachView() {
@@ -3125,6 +3128,7 @@
     const st = S.cstate;
     const el = $('#client-list');
     if (!st) { el.innerHTML = '<div class="loading-line">Cargando…</div>'; return; }
+    if (isDesk()) { renderClientTable(); return; }
     const stats = {};
     st.alltime.forEach((x) => { stats[x.athleteId] = x; });
     let html = '';
@@ -3140,6 +3144,7 @@
       const open = S.clientOpen === a.id;
       const plan = hasPlan(a.id);
       const sub = (plan ? '<span class="ok">PLAN ' + maskDays(st.coach.masks[a.id]) + ' DÍAS</span>' : '<span class="warn">SIN PLAN</span>') +
+        ((st.coach.withNutri || []).indexOf(a.id) !== -1 ? ' · <span class="ok">COMIDAS</span>' : '') +
         ' · ' + (a.gender === 'f' ? 'MUJER' : 'HOMBRE') + ' · RACHA ' + (s.streak || 0) + ' · ' + plural(s.days || 0, 'ENTRENO', 'ENTRENOS');
       let inline = '';
       if (open && S.clientInline === 'rename') {
@@ -3321,8 +3326,9 @@
   function openPlanFor(id, kind) {
     if (S.pe.athleteId !== id && (S.pe.dirty || S.ne.dirty) && !window.confirm('Tienes cambios sin guardar. ¿Descartarlos?')) { switchCoachView('plan'); return; }
     if (kind) S.planKind = kind;
+    else if (S.planKind === 'rutinas') S.planKind = 'entreno';
     switchCoachView('plan');
-    if (S.pe.athleteId !== id) loadPlanEditor(id);
+    if (S.pe.athleteId !== id || S.pe.tplId) loadPlanEditor(id);
   }
   async function loadPlanEditor(id) {
     S.pe = { athleteId: id, plan: null, exists: false, dirty: false, open: {}, loading: !!id };
@@ -3345,6 +3351,7 @@
   const planSelect = $('#plan-client');
   planSelect.addEventListener('change', () => {
     if ((S.pe.dirty || S.ne.dirty) && !window.confirm('Tienes cambios sin guardar. ¿Descartarlos?')) { planSelect.value = S.pe.athleteId; return; }
+    if (S.planKind === 'rutinas') S.planKind = 'entreno';
     loadPlanEditor(planSelect.value);
   });
   function renderPlanView() {
@@ -3352,37 +3359,56 @@
     planSelect.innerHTML = '<option value="">ELIGE UN CLIENTE…</option>' + roster.map((a) => '<option value="' + a.id + '">' + esc(a.name.toUpperCase()) + (hasPlan(a.id) ? '' : ' · SIN PLAN') + '</option>').join('');
     planSelect.value = S.pe.athleteId || '';
     $$('#plan-kind button').forEach((b) => b.classList.toggle('on', b.dataset.v === S.planKind));
-    const isNutri = S.planKind === 'nutri';
-    $('#plan-editor').classList.toggle('hidden', isNutri);
-    $('#nutri-editor').classList.toggle('hidden', !isNutri);
-    if (isNutri) { renderNutriEditor(); return; }
+    const kind = S.planKind;
+    const tplMode = kind === 'rutinas' && !!S.pe.tplId;
+    $('#plan-client-field').classList.toggle('hidden', kind === 'rutinas' || hasSide());
+    $('#plan-editor').classList.toggle('hidden', !(kind === 'entreno' || tplMode));
+    $('#nutri-editor').classList.toggle('hidden', kind !== 'nutri');
+    $('#rutinas-view').classList.toggle('hidden', !(kind === 'rutinas' && !tplMode));
+    renderPlanSide();
+    schedulePreview();
+    if (kind === 'nutri') { renderNutriEditor(); return; }
+    if (kind === 'rutinas' && !tplMode) { renderRutinasList(); return; }
     const el = $('#plan-editor');
-    if (!S.pe.athleteId) { el.innerHTML = emptyCard('ti-clipboard-list', 'Elige un cliente', roster.length ? 'Selecciona un cliente para crear o editar su plan semanal.' : 'Primero agrega clientes en la pestaña Clientes.'); return; }
+    if (!tplMode && !S.pe.athleteId) { el.innerHTML = emptyCard('ti-clipboard-list', 'Elige un cliente', roster.length ? (hasSide() ? 'Elige un cliente en la lista de la izquierda para crear o editar su plan.' : 'Selecciona un cliente para crear o editar su plan semanal.') : 'Primero agrega clientes en la pestaña Clientes.'); return; }
     if (S.pe.loading || !S.pe.plan) { el.innerHTML = '<div class="loading-line">Cargando plan…</div>'; return; }
-    el.innerHTML = planEditorHtml();
+    if (!tplMode && S.rutinas === null) {
+      S.rutinas = undefined;
+      loadRutinas().then(() => { if (S.cview === 'plan' && S.planKind === 'entreno' && !S.pe.dirty) renderPlanView(); }, () => { S.rutinas = null; });
+    }
+    el.innerHTML = (tplMode ? tplHeaderHtml() : '') + planEditorHtml();
   }
   function planStatusHtml() {
     if (S.pe.dirty) return '<span class="plan-status ps-dirty" id="pe-status">CAMBIOS SIN GUARDAR</span>';
+    if (S.pe.tplId) return S.pe.exists ? '<span class="plan-status ps-live" id="pe-status">RUTINA GUARDADA EN MIS RUTINAS</span>' : '<span class="plan-status ps-new" id="pe-status">RUTINA NUEVA · SIN GUARDAR</span>';
     return S.pe.exists ? '<span class="plan-status ps-live" id="pe-status">PLAN PUBLICADO · EL CLIENTE YA LO VE</span>' : '<span class="plan-status ps-new" id="pe-status">SIN PLAN TODAVÍA</span>';
   }
   function markDirty() {
     S.pe.dirty = true;
     const s = $('#pe-status');
     if (s) { s.className = 'plan-status ps-dirty'; s.textContent = 'CAMBIOS SIN GUARDAR'; }
+    schedulePreview();
   }
   function planEditorHtml() {
     const p = S.pe.plan;
     const others = ((S.cstate && S.cstate.roster) || []).filter((a) => a.id !== S.pe.athleteId && hasPlan(a.id));
     const input = (attr, val, ph, extra) => '<input class="form-input" ' + attr + ' value="' + esc(val) + '" placeholder="' + esc(ph) + '"' + (extra || '') + '>';
+    const tplMode = !!S.pe.tplId;
+    const ruts = (S.rutinas || []).filter((r) => r.id !== S.pe.tplId);
     let html = planStatusHtml();
-    html += '<div class="plan-tools"><button type="button" class="action-btn" data-act="pe-tpl"><i class="ti ti-template" aria-hidden="true"></i>PLANTILLA TMC 5 DÍAS</button>' +
+    html += '<div class="plan-tools"><button type="button" class="action-btn primary" data-act="pe-import"><i class="ti ti-file-import" aria-hidden="true"></i>IMPORTAR (EXCEL, TEXTO, FOTO)</button>' +
+      '<button type="button" class="action-btn" data-act="pe-tpl"><i class="ti ti-template" aria-hidden="true"></i>PLANTILLA TMC 5 DÍAS</button>' +
+      (!tplMode ? '<select class="form-select" id="pe-userut" aria-label="Usar una de Mis rutinas"' + (ruts.length ? '' : ' disabled') + '><option value="">' + (ruts.length ? 'USAR UNA DE MIS RUTINAS…' : 'MIS RUTINAS (VACÍO)') + '</option>' +
+        ruts.map((r) => '<option value="' + r.id + '">' + esc(r.nombre.toUpperCase()) + '</option>').join('') + '</select>' : '') +
+      (!tplMode && p.dias.length ? '<button type="button" class="action-btn" data-act="pe-saverut"><i class="ti ti-books" aria-hidden="true"></i>GUARDAR EN MIS RUTINAS</button>' : '') +
+      (tplMode && S.pe.exists ? '<button type="button" class="action-btn" data-act="pe-assign"><i class="ti ti-users" aria-hidden="true"></i>ASIGNAR A CLIENTES</button>' : '') +
       (p.dias.length ? '<button type="button" class="action-btn" data-act="pe-image"><i class="ti ti-photo" aria-hidden="true"></i>IMAGEN DEL PLAN</button>' : '') +
       '<select class="form-select" id="pe-copy" aria-label="Copiar plan de otro cliente"' + (others.length ? '' : ' disabled') + '><option value="">' + (others.length ? 'COPIAR DE…' : 'COPIAR (SIN OTROS PLANES)') + '</option>' +
       others.map((a) => '<option value="' + a.id + '">' + esc(a.name.toUpperCase()) + '</option>').join('') + '</select></div>';
     html += '<div class="editor-card"><div class="editor-card-title">PERFIL DEL PLAN</div>' +
       '<div class="form-field-group"><label class="form-label">ENFOQUE</label>' + input('data-pf="enfoque" maxlength="60"', p.enfoque, 'FUERZA + HIPERTROFIA') + '</div>' +
       '<div class="form-field-group"><label class="form-label">FRECUENCIA</label>' + input('data-pf="frecuencia" maxlength="60"', p.frecuencia, 'GYM 5 DÍAS (MAÑANA)') + '</div>' +
-      '<div class="form-row" style="margin-bottom:14px;"><div><label class="form-label">EDAD</label>' + input('data-pf="edad" inputmode="numeric" maxlength="3"', p.edad, 'AÑOS') + '</div>' +
+      '<div class="form-row" style="margin-bottom:14px;">' + (tplMode ? '' : '<div><label class="form-label">EDAD</label>' + input('data-pf="edad" inputmode="numeric" maxlength="3"', p.edad, 'AÑOS') + '</div>') +
       '<div><label class="form-label">NIVEL</label><select class="form-select" data-pf="nivel">' + ['', 'PRINCIPIANTE', 'INTERMEDIO', 'AVANZADO'].map((n) => '<option value="' + n + '"' + (p.nivel === n ? ' selected' : '') + '>' + (n || '—') + '</option>').join('') + '</select></div></div>' +
       '<div class="form-field-group"><label class="form-label">OBJETIVO</label>' + input('data-pf="objetivo" maxlength="160"', p.objetivo, 'Más fuerza, más músculo, mejor rendimiento') + '</div>' +
       '<label class="form-label">UNIDAD DE PESO</label><div class="seg" data-act="pe-unit"><button type="button" data-v="kg" class="' + (p.unidad !== 'lb' ? 'on' : '') + '">KG</button><button type="button" data-v="lb" class="' + (p.unidad === 'lb' ? 'on' : '') + '">LB</button></div></div>';
@@ -3390,7 +3416,8 @@
     p.dias.forEach((d) => { active[d.dow] = true; });
     html += '<div class="editor-card"><div class="editor-card-title">DÍAS DE ENTRENAMIENTO</div><div class="dow-toggles">' +
       DIAS_CORTOS.map((l, i) => '<button type="button" class="dow-toggle' + (active[i] ? ' on' : '') + '" data-act="pe-dow" data-dow="' + i + '" aria-label="' + DIAS[i] + '">' + l + '</button>').join('') + '</div>' +
-      '<div class="fair-note">Los días que no marques son de descanso y no rompen la racha del cliente.</div></div>';
+      '<div class="fair-note">Los días que no marques son de descanso y no rompen la racha del cliente.</div>' +
+      (p.dias.length > 1 ? '<button type="button" class="link-btn" data-act="pe-open-all" style="margin-top:6px;">' + (p.dias.every((d) => S.pe.open[d.dow]) ? 'Cerrar todos los días' : 'Abrir todos los días') + '</button>' : '') + '</div>';
     p.dias.slice().sort((a, b) => a.dow - b.dow).forEach((d) => {
       const di = p.dias.indexOf(d);
       const n = dayExercises(d).length;
@@ -3435,8 +3462,8 @@
     html += '<div class="editor-card"><div class="editor-card-title">CONSEJOS DEL COACH</div>' + p.consejos.slice(0, 3).map((c, ci) =>
       '<div class="tip-edit" data-ci="' + ci + '"><input class="form-input" data-cf="titulo" maxlength="40" value="' + esc(c.titulo) + '" placeholder="TÍTULO (EJ: MANEJO DE LA FATIGA)">' +
       '<textarea class="form-textarea" data-cf="items" placeholder="Un consejo por línea">' + esc((c.items || []).join('\n')) + '</textarea></div>').join('') + '</div>';
-    html += '<button type="button" class="publish-btn" data-act="pe-save"><i class="ti ti-send" aria-hidden="true"></i><span>' + (S.pe.exists ? 'GUARDAR CAMBIOS' : 'PUBLICAR PLAN') + '</span></button>';
-    if (S.pe.exists) html += '<button type="button" class="delete-btn" data-act="pe-delete">BORRAR PLAN</button>';
+    html += '<button type="button" class="publish-btn" data-act="pe-save"><i class="ti ti-' + (tplMode ? 'books' : 'send') + '" aria-hidden="true"></i><span>' + (tplMode ? 'GUARDAR RUTINA' : S.pe.exists ? 'GUARDAR CAMBIOS' : 'PUBLICAR PLAN') + '</span></button>';
+    if (S.pe.exists) html += '<button type="button" class="delete-btn" data-act="pe-delete">' + (tplMode ? 'BORRAR RUTINA' : 'BORRAR PLAN') + '</button>';
     return html;
   }
   const planEditor = $('#plan-editor');
@@ -3452,7 +3479,8 @@
   }
   planEditor.addEventListener('input', (ev) => {
     const t = ev.target;
-    if (!S.pe.plan || t.id === 'pe-copy') return;
+    if (!S.pe.plan || t.id === 'pe-copy' || t.id === 'pe-userut') return;
+    if (t.dataset.tf) { if (t.dataset.tf === 'nombre') S.pe.tplName = t.value; else S.pe.tplDesc = t.value; markDirty(); return; }
     const r = peRefs(t);
     if (t.dataset.pf) r.p[t.dataset.pf] = t.value;
     else if (t.dataset.df && r.day) {
@@ -3481,6 +3509,12 @@
       }
       return;
     }
+    if (ev.target.id === 'pe-userut' && ev.target.value) {
+      const sel = ev.target;
+      if (S.pe.plan.dias.length && !window.confirm('Esto reemplaza el plan actual (sin guardar todavía). ¿Continuar?')) { sel.value = ''; return; }
+      useRutina(sel.value);
+      return;
+    }
     if (ev.target.id !== 'pe-copy' || !ev.target.value) return;
     const sel = ev.target;
     const from = sel.value;
@@ -3507,11 +3541,26 @@
     const r = peRefs(btn);
     const p = r.p;
     const rerender = () => { markDirty(); renderPlanView(); };
+    if (act === 'tpl-back') { closeTemplate(); return; }
+    if (act === 'pe-import') { openImport('client'); return; }
+    if (act === 'pe-saverut') { openSaveAsRutina(); return; }
+    if (act === 'pe-assign') {
+      const r = (S.rutinas || []).find((x) => x.id === S.pe.tplId);
+      if (S.pe.dirty) { toast('Guarda la rutina antes de asignarla', 'ti-alert-triangle', true); return; }
+      if (r) openAssign(r);
+      return;
+    }
+    if (act === 'pe-open-all') {
+      const all = p.dias.every((d) => S.pe.open[d.dow]);
+      p.dias.forEach((d) => { S.pe.open[d.dow] = !all; });
+      renderPlanView();
+      return;
+    }
     if (act === 'pe-image') {
       const pl = clone(p);
       pl.dias = pl.dias.filter((d) => dayExercises(d).some((e) => e.nombre.trim()));
       pl.dias.forEach((d) => d.secciones.forEach((s) => { s.ejercicios = s.ejercicios.filter((e) => e.nombre.trim()); }));
-      sharePlanImage(pl, cName(S.pe.athleteId));
+      sharePlanImage(pl, S.pe.tplId ? (S.pe.tplName || 'Rutina') : cName(S.pe.athleteId));
       return;
     }
     if (act === 'pe-ex-extra') { (S.pe.extra || (S.pe.extra = {}))[r.ex.id] = true; renderPlanView(); const v = $('[data-di="' + r.dayEl.dataset.di + '"] [data-si="' + r.secEl.dataset.si + '"] [data-ei="' + r.exEl.dataset.ei + '"] [data-ef="video"]', planEditor); if (v) v.focus(); return; }
@@ -3570,6 +3619,37 @@
       return;
     }
     if (act === 'pe-ex-mode') { r.ex.modo = r.ex.modo === 'libre' ? 'carga' : 'libre'; rerender(); return; }
+    if (act === 'pe-save' && S.pe.tplId) {
+      const payload = cleanPlanForSave(p);
+      if (!payload.dias.length) { toast('Agrega al menos un día con ejercicios', 'ti-alert-triangle', true); return; }
+      if (!(S.pe.tplName || '').trim()) { toast('Ponle un nombre a la rutina', 'ti-alert-triangle', true); const i = $('[data-tf="nombre"]'); if (i) i.focus(); return; }
+      btn.classList.add('publishing'); btn.disabled = true;
+      const pe = S.pe;
+      try {
+        const res = await api('PUT', 'rutinas' + (pe.exists ? '?id=' + pe.tplId : ''), { nombre: pe.tplName.trim(), descripcion: (pe.tplDesc || '').trim(), plan: payload });
+        await loadRutinas().catch(() => {});
+        toast('Rutina guardada. Ya puedes asignarla a tus clientes.', 'ti-books');
+        if (S.pe !== pe) return; // el coach ya abrió otra cosa: solo se actualiza la biblioteca
+        pe.tplId = res.rutina.id; pe.exists = true; pe.dirty = false;
+        pe.plan = clone(res.rutina.plan);
+        if (!pe.plan.consejos || !pe.plan.consejos.length) pe.plan.consejos = clone(TPL.consejos);
+        renderPlanView();
+      } catch (e) { toastErr(e); btn.classList.remove('publishing'); btn.disabled = false; }
+      return;
+    }
+    if (act === 'pe-delete' && S.pe.tplId) {
+      if (!confirmTap(btn, '¿BORRAR LA RUTINA? TOCA OTRA VEZ')) return;
+      const pe = S.pe;
+      try {
+        await api('DELETE', 'rutinas?id=' + pe.tplId);
+        await loadRutinas().catch(() => {});
+        toast('Rutina borrada');
+        if (S.pe !== pe) { if (S.planKind === 'rutinas' && !S.pe.tplId) renderPlanView(); return; }
+        pe.dirty = false;
+        closeTemplate();
+      } catch (e) { toastErr(e); }
+      return;
+    }
     if (act === 'pe-save') {
       const days = p.dias.filter((d) => dayExercises(d).some((e) => e.nombre.trim()));
       if (!days.length) { toast('Agrega al menos un día con ejercicios', 'ti-alert-triangle', true); return; }
@@ -3815,8 +3895,7 @@
   $('#plan-kind').addEventListener('click', (ev) => {
     const b = ev.target.closest('button');
     if (!b) return;
-    S.planKind = b.dataset.v;
-    renderPlanView();
+    setPlanKind(b.dataset.v);
   });
   const ACTIVIDAD = [[1.2, 'SEDENTARIO'], [1.375, 'LIGERO · 1–3 DÍAS'], [1.55, 'MODERADO · 3–5 DÍAS'], [1.725, 'ALTO · 6–7 DÍAS'], [1.9, 'MUY ALTO · DOBLE SESIÓN']];
   const OBJETIVOS = [['VOLUMEN', 0.1], ['DEFINICIÓN', -0.2], ['MANTENIMIENTO', 0], ['RECOMPOSICIÓN', -0.1]];
@@ -3880,6 +3959,7 @@
     S.ne.dirty = true;
     const s = $('#ne-status');
     if (s) { s.className = 'plan-status ps-dirty'; s.textContent = 'CAMBIOS SIN GUARDAR'; }
+    schedulePreview();
   }
   const macroKcal = (n) => (parseNum(n.proteina) || 0) * 4 + (parseNum(n.carbos) || 0) * 4 + (parseNum(n.grasas) || 0) * 9;
   function macroHintText(n) {
@@ -4311,6 +4391,734 @@
       toast('Datos guardados');
       renderPagos();
     } catch (e) { btn.disabled = false; toastErr(e); }
+  });
+
+  /* ================================================================ COACH: escritorio */
+  const deskMQ = window.matchMedia ? window.matchMedia('(min-width: 1100px)') : null;
+  const isDesk = () => !!(deskMQ && deskMQ.matches);
+  const sideMQ = window.matchMedia ? window.matchMedia('(min-width: 1500px)') : null;
+  const hasSide = () => isDesk() && !!(sideMQ && sideMQ.matches);
+  [deskMQ, sideMQ].forEach((mq) => {
+    if (!mq) return;
+    const onDesk = () => { if (S.role === 'coach' && coach.classList.contains('active')) renderCoachView(); };
+    if (mq.addEventListener) mq.addEventListener('change', onDesk); else if (mq.addListener) mq.addListener(onDesk);
+  });
+  const IMPORT_SRC = './import.js?v=15b854916c';
+  let importP = null;
+  function needImport() {
+    if (window.TMCImport) return Promise.resolve(window.TMCImport);
+    if (!importP) {
+      importP = new Promise((res, rej) => {
+        const s = document.createElement('script');
+        s.src = IMPORT_SRC; s.async = true;
+        s.onload = () => res(window.TMCImport);
+        s.onerror = () => { importP = null; rej(new Error('No se pudo cargar el importador. Revisa tu internet.')); };
+        document.head.appendChild(s);
+      });
+    }
+    return importP;
+  }
+  function downloadFile(name, text, type) {
+    const blob = new Blob([text], { type: type || 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 2000);
+  }
+
+  // ---- tabla de clientes (escritorio)
+  S.ct = { q: '', sort: 'name', dir: 1, pin: null };
+  function clientRows() {
+    const st = S.cstate;
+    const t = today();
+    const stats = {};
+    st.alltime.forEach((x) => { stats[x.athleteId] = x; });
+    const pays = {};
+    (S.pagos || []).forEach((p) => { pays[p.athleteId] = p; });
+    const nut = new Set(st.coach.withNutri || []);
+    const ci = new Set(st.coach.checkinsWeek || []);
+    return st.roster.map((a) => {
+      const h = st.coach.history[a.id] || [];
+      const p = pays[a.id] || null;
+      return {
+        a, s: stats[a.id] || {}, plan: hasPlan(a.id) ? maskDays(st.coach.masks[a.id]) : 0, nutri: nut.has(a.id),
+        last: h.length ? h[h.length - 1].date : '', ci: ci.has(a.id), p, ps: payStatus(p, t),
+      };
+    });
+  }
+  const CT_SORT = {
+    name: (r) => nameKey(r.a.name), plan: (r) => r.plan, nutri: (r) => (r.nutri ? 1 : 0), last: (r) => r.last || '',
+    streak: (r) => r.s.streak || 0, points: (r) => r.s.points || 0, ci: (r) => (r.ci ? 1 : 0),
+    pago: (r) => (r.p && r.p.proximoPago) || '9999', valor: (r) => (r.p && r.p.valor) || 0,
+  };
+  function renderClientTable() {
+    const el = $('#client-list');
+    const st = S.cstate;
+    let html = '';
+    if (S.lastCreated && cAthlete(S.lastCreated.id)) {
+      html += '<div class="focus-card f-green" style="margin-bottom:16px;"><div class="focus-label">✓ ' + esc(S.lastCreated.name) + ' YA ESTÁ EN EL TEAM</div>' +
+        '<div class="focus-text">Compártele cómo entrar: correo <b>atletas@teamcarlos.com</b>, la contraseña del team y su PIN <b>' + esc(S.lastCreated.pin) + '</b>.</div>' +
+        '<div class="btn-row" style="margin-top:10px;"><button type="button" class="btn-accent" data-plan-for="' + S.lastCreated.id + '">CREAR SU PLAN</button><button type="button" class="btn-ghost" data-dismiss-created>LISTO</button></div></div>';
+    }
+    if (!st.roster.length) { el.innerHTML = html + '<div class="empty-sub" style="text-align:left;">Agrega tu primer cliente arriba.</div>'; return; }
+    const q = nameKey(S.ct.q);
+    const key = CT_SORT[S.ct.sort] || CT_SORT.name;
+    const rows = clientRows().filter((r) => !q || nameKey(r.a.name).indexOf(q) !== -1)
+      .sort((x, y) => { const a = key(x), b = key(y); return (a < b ? -1 : a > b ? 1 : 0) * S.ct.dir || nameKey(x.a.name).localeCompare(nameKey(y.a.name)); });
+    const th = (k, label, cls) => '<th' + (k ? ' data-sort="' + k + '"' : '') + (cls ? ' class="' + cls + (S.ct.sort === k ? ' sorted' : '') + '"' : S.ct.sort === k ? ' class="sorted"' : '') + '>' + label + (S.ct.sort === k ? (S.ct.dir > 0 ? ' ▲' : ' ▼') : '') + '</th>';
+    html += '<div class="ct-bar"><input class="form-input" id="ct-q" type="search" placeholder="Buscar cliente…" value="' + esc(S.ct.q) + '" aria-label="Buscar cliente">' +
+      '<span class="ct-count">' + plural(rows.length, 'CLIENTE', 'CLIENTES') + '</span>' +
+      '<button type="button" class="action-btn" data-ct="csv"><i class="ti ti-file-spreadsheet" aria-hidden="true"></i>DESCARGAR EXCEL</button></div>';
+    html += '<div class="ct-wrap"><table class="ct"><thead><tr>' + th('name', 'CLIENTE') + th('plan', 'ENTRENO') + th('nutri', 'COMIDAS') +
+      th('last', 'ÚLTIMO', 'c-last') + th('streak', 'RACHA', 'ct-num c-streak') + th('points', 'PUNTOS', 'ct-num c-points') + th('ci', 'CHECK-IN', 'c-ci') + th('pago', 'PRÓXIMO PAGO') +
+      th('valor', 'VALOR', 'ct-num') + th('', 'ESTADO') + th('', '') + '</tr></thead><tbody>';
+    html += rows.map((r) => {
+      const a = r.a;
+      return '<tr data-id="' + a.id + '">' +
+        '<td><div class="ct-who"><button type="button" class="ct-g" data-ct="gender" title="Cambiar género (H / M)">' + (a.gender === 'f' ? 'M' : 'H') + '</button>' +
+        '<input class="ct-in ct-name" data-f="name" value="' + esc(a.name) + '" maxlength="40" aria-label="Nombre de ' + esc(a.name) + '"></div></td>' +
+        '<td><button type="button" class="ct-link ' + (r.plan ? 'on' : 'off') + '" data-ct="plan">' + (r.plan ? r.plan + ' DÍAS' : 'CREAR') + '</button></td>' +
+        '<td><button type="button" class="ct-link ' + (r.nutri ? 'on' : 'off') + '" data-ct="nutri">' + (r.nutri ? '✓ VER' : 'CREAR') + '</button></td>' +
+        '<td class="c-last' + (r.last ? '' : ' muted') + '">' + (r.last ? agoDate(r.last) + ' · ' + fmtDay(r.last) : 'SIN REGISTROS') + '</td>' +
+        '<td class="ct-num c-streak">' + (r.s.streak || 0) + '</td><td class="ct-num c-points">' + (r.s.points || 0).toLocaleString('es-CO') + '</td>' +
+        '<td class="c-ci' + (r.ci ? '' : ' muted') + '"' + (r.ci ? ' style="color:var(--accent);"' : '') + '>' + (r.ci ? '✓ HECHO' : '—') + '</td>' +
+        '<td><input type="date" class="ct-in ct-date" data-f="proximoPago" value="' + esc((r.p && r.p.proximoPago) || '') + '" aria-label="Próximo pago"></td>' +
+        '<td><input class="ct-in ct-money" data-f="valor" inputmode="numeric" value="' + (r.p && r.p.valor ? r.p.valor.toLocaleString('es-CO') : '') + '" placeholder="$" aria-label="Valor"></td>' +
+        '<td><span class="pill ' + r.ps.cls + '">' + esc(r.ps.label) + '</span></td>' +
+        '<td>' + (S.ct.pin === a.id ? '<span class="ct-pin"><input class="ct-in" data-pin maxlength="4" inputmode="numeric" value="' + randomPin() + '" aria-label="PIN nuevo"><button type="button" class="ct-g" data-ct="pin-ok">OK</button><button type="button" class="ct-g" data-ct="pin-x" aria-label="Cancelar">✕</button></span>' :
+        '<div class="ct-actions"><button type="button" data-ct="pin" title="PIN nuevo" aria-label="PIN nuevo"><i class="ti ti-key" aria-hidden="true"></i></button>' +
+        '<button type="button" data-ct="body" title="Medidas y fotos" aria-label="Medidas y fotos"><i class="ti ti-ruler-measure" aria-hidden="true"></i></button>' +
+        '<button type="button" data-ct="pay" title="Mensualidad" aria-label="Mensualidad"><i class="ti ti-cash" aria-hidden="true"></i></button>' +
+        '<button type="button" class="danger" data-ct="del" title="Eliminar cliente" aria-label="Eliminar cliente"><i class="ti ti-trash" aria-hidden="true"></i></button></div>') + '</td></tr>';
+    }).join('') + '</tbody></table></div>';
+    if (!rows.length) html += '<div class="empty-sub" style="padding:16px;">Nadie con ese nombre.</div>';
+    el.innerHTML = html;
+  }
+  function clientsCsv() {
+    // Excel ejecuta como fórmula lo que empieza con = + - @: se antepone ' a los textos (no a los números)
+    const cell = (v) => { let t = String(v == null ? '' : v); if (typeof v === 'string' && /^[=+\-@\t\r]/.test(t)) t = "'" + t; return '"' + t.replace(/"/g, '""') + '"'; };
+    const head = ['Cliente', 'Género', 'Días de entreno', 'Plan de comidas', 'Último entreno', 'Racha', 'Puntos', 'Check-in esta semana', 'Próximo pago', 'Valor', 'Estado'];
+    const lines = clientRows().sort((x, y) => nameKey(x.a.name).localeCompare(nameKey(y.a.name))).map((r) => [
+      r.a.name, r.a.gender === 'f' ? 'Mujer' : 'Hombre', r.plan || '', r.nutri ? 'Sí' : 'No', r.last, r.s.streak || 0, r.s.points || 0, r.ci ? 'Sí' : 'No',
+      (r.p && r.p.proximoPago) || '', (r.p && r.p.valor) || '', r.ps.label,
+    ].map(cell).join(';'));
+    return '﻿' + [head.map(cell).join(';')].concat(lines).join('\r\n');
+  }
+  const clientList = $('#client-list');
+  clientList.addEventListener('input', (ev) => {
+    if (ev.target.id !== 'ct-q') return;
+    S.ct.q = ev.target.value;
+    const pos = ev.target.selectionStart;
+    renderClientTable();
+    const q = $('#ct-q');
+    if (q) { q.focus(); try { q.setSelectionRange(pos, pos); } catch (e) { /* nada */ } }
+  });
+  // al guardar se redibuja la tabla: lo que el coach ya está escribiendo en otra celda no se pierde
+  function rerenderTableKeepFocus() {
+    const act = document.activeElement;
+    const tr = act && clientList.contains(act) && act.closest('tr[data-id]');
+    const sel = tr && act.dataset.f ? 'tr[data-id="' + tr.dataset.id + '"] [data-f="' + act.dataset.f + '"]' : tr && act.hasAttribute('data-pin') ? 'tr[data-id="' + tr.dataset.id + '"] [data-pin]' : null;
+    const typed = sel ? act.value : null;
+    let pos = null;
+    try { pos = sel ? [act.selectionStart, act.selectionEnd] : null; } catch (e) { pos = null; }
+    renderClientTable();
+    if (!sel) return;
+    const el = $(sel, clientList);
+    if (!el) return;
+    const orig = el.value;
+    if (typed !== orig) {
+      el.value = typed;
+      // el valor se puso por código: al salir de la celda se guarda igual que si lo hubiera escrito
+      el.addEventListener('blur', () => { if (!el._saved && el.value !== orig && el.dataset.f) el.dispatchEvent(new Event('change', { bubbles: true })); }, { once: true });
+    }
+    el.focus();
+    if (pos && pos[0] != null) { try { el.setSelectionRange(pos[0], pos[1]); } catch (e) { /* fechas no tienen cursor */ } }
+  }
+  clientList.addEventListener('change', async (ev) => {
+    const t = ev.target;
+    if (!t.classList.contains('ct-in') || !t.dataset.f) return;
+    t._saved = true;
+    const id = t.closest('tr').dataset.id;
+    const a = cAthlete(id);
+    if (!a) return;
+    try {
+      if (t.dataset.f === 'name') {
+        const v = t.value.trim();
+        if (v.length < 2 || v === a.name) { t.value = a.name; return; }
+        await api('PATCH', 'athletes/' + id, { name: v });
+        await loadCoachState();
+        toast('Nombre actualizado');
+      } else {
+        const body = t.dataset.f === 'valor' ? { valor: pesos(t.value) } : { proximoPago: t.value || undefined };
+        if (t.dataset.f === 'proximoPago' && !t.value) return;
+        const r = await api('PUT', 'pay?athleteId=' + id, body);
+        upsertPago(id, r.pago);
+        toast(t.dataset.f === 'valor' ? 'Valor guardado · ' + money(r.pago.valor) : 'Próximo pago: ' + fmtDay(r.pago.proximoPago), 'ti-cash');
+      }
+    } catch (e) { toastErr(e); }
+    rerenderTableKeepFocus();
+  });
+  clientList.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter' && ev.target.classList.contains('ct-in')) {
+      if (ev.target.hasAttribute('data-pin')) { const b = $('[data-ct="pin-ok"]', ev.target.closest('tr')); if (b) b.click(); return; }
+      ev.target.blur();
+    }
+    if (ev.key === 'Escape' && ev.target.hasAttribute('data-pin')) { S.ct.pin = null; renderClientTable(); }
+  });
+  clientList.addEventListener('click', async (ev) => {
+    const th = ev.target.closest('th[data-sort]');
+    if (th) {
+      const k = th.dataset.sort;
+      S.ct.dir = S.ct.sort === k ? -S.ct.dir : (k === 'name' || k === 'pago' ? 1 : -1);
+      S.ct.sort = k;
+      renderClientTable();
+      return;
+    }
+    const b = ev.target.closest('[data-ct]');
+    if (!b) return;
+    const act = b.dataset.ct;
+    if (act === 'csv') { downloadFile('clientes-team-carlos-' + today() + '.csv', clientsCsv(), 'text/csv;charset=utf-8'); toast('Descargando la tabla para Excel', 'ti-file-spreadsheet'); return; }
+    const tr = b.closest('tr');
+    const id = tr && tr.dataset.id;
+    const a = id && cAthlete(id);
+    if (!a) return;
+    if (act === 'plan') { openPlanFor(id, 'entreno'); return; }
+    if (act === 'nutri') { openPlanFor(id, 'nutri'); return; }
+    if (act === 'body') { S.segClient = id; S.segTab = 'cuerpo'; switchCoachView('seguimiento'); return; }
+    if (act === 'pay') { S.payOpen = id; switchCoachView('pagos'); return; }
+    if (act === 'pin') { S.ct.pin = id; renderClientTable(); const i = $('tr[data-id="' + id + '"] [data-pin]', clientList); if (i) { i.focus(); i.select(); } return; }
+    if (act === 'pin-x') { S.ct.pin = null; renderClientTable(); return; }
+    if (act === 'pin-ok') {
+      const v = ($('[data-pin]', tr) || {}).value || '';
+      if (!/^\d{4}$/.test(v)) { toast('El PIN debe tener 4 números', 'ti-alert-triangle', true); return; }
+      b.disabled = true;
+      try {
+        await api('PATCH', 'athletes/' + id, { pin: v });
+        S.ct.pin = null;
+        toast('PIN nuevo de ' + firstName(a.name) + ': ' + v + ' · compártelo', 'ti-key');
+        renderClientTable();
+      } catch (e) { b.disabled = false; toastErr(e); }
+      return;
+    }
+    if (act === 'gender') {
+      b.disabled = true;
+      try { await api('PATCH', 'athletes/' + id, { gender: a.gender === 'f' ? 'm' : 'f' }); await loadCoachState(); toast('Actualizado'); }
+      catch (e) { toastErr(e); }
+      renderClientTable();
+      return;
+    }
+    if (act === 'del') {
+      if (!confirmTap(b)) { toast('Toca otra vez para eliminar a ' + firstName(a.name) + ' y todo su historial', 'ti-alert-triangle', true); return; }
+      try {
+        await api('DELETE', 'athletes/' + id);
+        if (S.pe.athleteId === id) S.pe = { athleteId: '', plan: null, exists: false, dirty: false, open: {}, loading: false };
+        toast(firstName(a.name) + ' eliminado');
+        await Promise.all([loadCoachState(), loadPagos().catch(() => {})]);
+      } catch (e) { toastErr(e); }
+      renderClientTable();
+    }
+  });
+
+  // ---- Planes: lista de clientes a la izquierda y vista del cliente a la derecha (escritorio)
+  S.psQ = '';
+  S.pvDow = null;
+  function renderPlanSide() {
+    const el = $('#plan-side');
+    if (!el || !hasSide()) return;
+    if (!$('#ps-list', el)) {
+      el.innerHTML = '<button type="button" class="ps-rutinas" data-ps="rutinas"><i class="ti ti-books" aria-hidden="true"></i>MIS RUTINAS</button>' +
+        '<input class="form-input" id="ps-q" type="search" placeholder="Buscar cliente…" aria-label="Buscar cliente"><div class="ps-list" id="ps-list"></div>';
+    }
+    $('[data-ps="rutinas"]', el).classList.toggle('on', S.planKind === 'rutinas');
+    const roster = (S.cstate && S.cstate.roster) || [];
+    const nut = new Set((S.cstate && S.cstate.coach.withNutri) || []);
+    const q = nameKey(S.psQ);
+    const list = roster.filter((a) => !q || nameKey(a.name).indexOf(q) !== -1);
+    $('#ps-list', el).innerHTML = list.map((a) => {
+      const days = hasPlan(a.id) ? maskDays(S.cstate.coach.masks[a.id]) : 0;
+      const on = S.planKind !== 'rutinas' && S.pe.athleteId === a.id;
+      return '<button type="button" class="ps-item' + (on ? ' on' : '') + '" data-ps-id="' + a.id + '"><span class="who-avatar ' + (days ? 'wa-green' : 'wa-gray') + '">' + esc(initials(a.name)) + '</span>' +
+        '<span style="min-width:0;"><span class="n" style="display:block;">' + esc(a.name) + '</span><span class="d">' + (days ? '<span class="ok">' + days + ' DÍAS</span>' : 'SIN PLAN') + (nut.has(a.id) ? ' · <span class="ok">COMIDAS</span>' : '') + '</span></span></button>';
+    }).join('') || '<div class="empty-sub" style="text-align:left;">Sin clientes.</div>';
+  }
+  const planSide = $('#plan-side');
+  planSide.addEventListener('input', (ev) => { if (ev.target.id === 'ps-q') { S.psQ = ev.target.value; renderPlanSide(); } });
+  planSide.addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-ps="rutinas"]')) { setPlanKind('rutinas'); return; }
+    const b = ev.target.closest('[data-ps-id]');
+    if (!b) return;
+    const id = b.dataset.psId;
+    if (S.planKind === 'rutinas') {
+      if ((S.pe.dirty || S.ne.dirty) && !window.confirm('Tienes cambios sin guardar. ¿Descartarlos?')) return;
+      S.planKind = 'entreno';
+      S.pe.dirty = false;
+      loadPlanEditor(id);
+      return;
+    }
+    if (S.pe.athleteId === id) return;
+    if ((S.pe.dirty || S.ne.dirty) && !window.confirm('Tienes cambios sin guardar. ¿Descartarlos?')) return;
+    loadPlanEditor(id);
+  });
+  function setPlanKind(kind) {
+    if (kind === S.planKind) { if (kind === 'rutinas' && S.pe.tplId) closeTemplate(); return; }
+    if (S.planKind === 'rutinas' && S.pe.tplId) {
+      if (S.pe.dirty && !window.confirm('La rutina tiene cambios sin guardar. ¿Salir sin guardar?')) return;
+      const back = S.pe.prevAthlete || '';
+      S.planKind = kind;
+      loadPlanEditor(back);
+      return;
+    }
+    S.planKind = kind;
+    renderPlanView();
+  }
+
+  let pvTimer = null;
+  function schedulePreview() { clearTimeout(pvTimer); pvTimer = setTimeout(renderPlanPreview, 180); }
+  function renderPlanPreview() {
+    const el = $('#plan-preview');
+    if (!el || !isDesk() || S.cview !== 'plan') return;
+    const who = S.planKind === 'rutinas' ? '' : (S.pe.athleteId ? firstName(cName(S.pe.athleteId)).toUpperCase() : '');
+    let body = '';
+    if (S.planKind === 'nutri') {
+      const n = S.ne.nutri;
+      if (!n || S.ne.athleteId !== S.pe.athleteId) body = '<div class="pv-empty">Elige un cliente para ver su plan de comidas.</div>';
+      else {
+        const macros = [['KCAL', n.kcal], ['PROT', n.proteina], ['CARB', n.carbos], ['GRAS', n.grasas]].filter((m) => parseNum(m[1]));
+        body = '<div class="nutri-head"><div class="dh-eyebrow">PLAN DE ALIMENTACIÓN</div><div class="dh-title">' + esc(n.objetivo || 'MI PLAN') + '</div></div>' +
+          (macros.length ? '<div class="macro-grid" style="grid-template-columns:repeat(' + macros.length + ',minmax(0,1fr));">' + macros.map((m) => '<div class="macro"><div class="v" style="font-size:15px;">' + esc(m[1]) + '</div><div class="l">' + m[0] + '</div></div>').join('') + '</div>' : '') +
+          n.comidas.map((c) => '<div class="meal"><div class="meal-head"><div class="meal-name">' + esc(c.nombre || 'Comida') + '</div>' + (c.hora ? '<div class="meal-hora">' + esc(c.hora) + '</div>' : '') + '</div>' +
+            '<ul class="meal-items">' + c.items.filter((i) => i.texto).map((i) => '<li>' + esc(i.texto) + (i.alt ? '<span class="alt">o ' + esc(i.alt) + '</span>' : '') + '</li>').join('') + '</ul></div>').join('');
+      }
+    } else {
+      const p = S.pe.plan;
+      const ready = p && (S.planKind === 'rutinas' ? S.pe.tplId : S.pe.athleteId);
+      if (!ready) body = '<div class="pv-empty">' + (S.planKind === 'rutinas' ? 'Abre o crea una rutina para verla aquí.' : 'Elige un cliente para ver su plan como lo ve él.') + '</div>';
+      else if (!p.dias.length) body = '<div class="pv-empty">Marca los días de entrenamiento y agrega ejercicios: aquí verás cómo le queda al cliente.</div>';
+      else {
+        if (S.pvDow == null || !p.dias.some((d) => d.dow === S.pvDow)) S.pvDow = p.dias.slice().sort((a, b) => a.dow - b.dow)[0].dow;
+        const day = p.dias.find((d) => d.dow === S.pvDow);
+        const exs = dayExercises(day).filter((e) => e.nombre.trim());
+        body = '<div class="pv-days">' + DIAS_CORTOS.map((l, i) => {
+          const has = p.dias.some((d) => d.dow === i);
+          return '<button type="button" class="' + (has ? 'has' : '') + (i === S.pvDow ? ' on' : '') + '" data-pv="' + i + '"' + (has ? '' : ' disabled') + '>' + l + '</button>';
+        }).join('') + '</div>' +
+          '<div class="day-head"><div class="dh-eyebrow">' + DIAS[day.dow] + '</div><div class="dh-title">' + esc(day.titulo || DIAS[day.dow]) + '</div>' +
+          (day.subtitulo ? '<div class="dh-sub">' + esc(day.subtitulo) + '</div>' : '') +
+          '<div class="dh-chips">' + (day.duracion ? '<span class="dh-chip"><i class="ti ti-clock" aria-hidden="true"></i>' + esc(day.duracion) + '</span>' : '') +
+          (day.rpe ? '<span class="dh-chip"><i class="ti ti-flame" aria-hidden="true"></i>RPE ' + esc(day.rpe) + '</span>' : '') +
+          '<span class="dh-chip"><i class="ti ti-list-check" aria-hidden="true"></i>' + plural(exs.length, 'EJERCICIO', 'EJERCICIOS') + '</span></div>' +
+          (day.nota ? '<div class="dh-note">' + esc(day.nota) + '</div>' : '') + '</div>';
+        let n = 0;
+        day.secciones.forEach((s, si) => {
+          const list = s.ejercicios.filter((e) => e.nombre.trim());
+          if (!list.length) return;
+          body += '<div class="sec-block"><div class="sec-head"><div class="wod-tag"><span class="tag-rule"></span><span class="tag-name">' + esc(s.titulo || (day.secciones.length > 1 ? 'PARTE ' + (si + 1) : 'EJERCICIOS')) + '</span></div>' +
+            (s.nota ? '<span class="sec-note">' + esc(s.nota) + '</span>' : '') + '</div>' +
+            list.map((e) => '<div class="ex-item"><div class="ex-head"><span class="ex-idx">' + (++n) + '</span><span class="ex-main"><span class="ex-name">' + esc(e.nombre) + '</span><span class="ex-presc">' + prescText(e) + '</span></span>' +
+              (e.video ? '<i class="ti ti-player-play" style="color:var(--accent);" title="Tiene video" aria-hidden="true"></i>' : '') + '</div></div>').join('') + '</div>';
+        });
+      }
+    }
+    el.innerHTML = '<div class="pv-head"><span>' + (S.planKind === 'rutinas' ? 'ASÍ LA VERÁ TU CLIENTE' : 'ASÍ LO VE ' + (who ? esc(who) : 'EL CLIENTE')) + '</span><span>' + (S.planKind === 'nutri' ? 'COMIDA' : 'HOY') + '</span></div><div class="pv-phone">' + body + '</div>';
+  }
+  $('#plan-preview').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-pv]');
+    if (!b) return;
+    S.pvDow = +b.dataset.pv;
+    renderPlanPreview();
+  });
+
+  // ---- Mis rutinas
+  S.rutinas = null;
+  async function loadRutinas() {
+    const r = await api('GET', 'rutinas');
+    if (S.role !== 'coach') throw stale();
+    S.rutinas = r.rutinas || [];
+    return S.rutinas;
+  }
+  function cleanPlanForSave(p) {
+    const payload = clone(p);
+    payload.dias = payload.dias.filter((d) => dayExercises(d).some((e) => e.nombre.trim()));
+    payload.consejos = (payload.consejos || []).map((c) => ({ titulo: (c.titulo || '').trim(), items: (c.items || []).map((x) => String(x).trim()).filter(Boolean) })).filter((c) => c.titulo || c.items.length);
+    return payload;
+  }
+  function renderRutinasList() {
+    const el = $('#rutinas-view');
+    let html = '<div class="rut-tools"><button type="button" class="action-btn primary" data-rut="new"><i class="ti ti-plus" aria-hidden="true"></i>NUEVA RUTINA</button>' +
+      '<button type="button" class="action-btn" data-rut="import"><i class="ti ti-file-import" aria-hidden="true"></i>IMPORTAR</button>' +
+      '<button type="button" class="action-btn" data-rut="tmc"><i class="ti ti-template" aria-hidden="true"></i>DESDE PLANTILLA TMC</button></div>';
+    if (!Array.isArray(S.rutinas)) {
+      el.innerHTML = html + '<div class="loading-line">Cargando tus rutinas…</div>';
+      loadRutinas().then(() => { if (S.cview === 'plan' && S.planKind === 'rutinas' && !S.pe.tplId) renderRutinasList(); }, (e) => { if (!quietErr(e)) toastErr(e); });
+      return;
+    }
+    if (!S.rutinas.length) {
+      html += emptyCard('ti-books', 'Todavía no tienes rutinas guardadas', 'Guarda aquí tus rutinas para asignarlas a varios clientes de una vez. Créalas, impórtalas de Excel, de un texto o de una foto, o guarda el plan de un cliente con GUARDAR EN MIS RUTINAS.');
+    } else {
+      html += '<div class="rut-grid">' + S.rutinas.map((r) => {
+        const days = new Set(r.plan.dias.map((d) => d.dow));
+        const n = r.plan.dias.reduce((s, d) => s + dayExercises(d).length, 0);
+        return '<div class="rut-card" data-rid="' + r.id + '"><div class="rut-name">' + esc(r.nombre) + '</div>' + (r.descripcion ? '<div class="rut-desc">' + esc(r.descripcion) + '</div>' : '') +
+          '<div class="rut-days">' + DIAS_CORTOS.map((l, i) => '<span class="' + (days.has(i) ? 'on' : '') + '">' + l + '</span>').join('') + '</div>' +
+          '<div class="rut-meta">' + plural(r.plan.dias.length, 'DÍA', 'DÍAS') + ' · ' + plural(n, 'EJERCICIO', 'EJERCICIOS') + ' · ' + agoTs(r.updatedAt) + '</div>' +
+          '<div class="rut-actions"><button type="button" class="action-btn primary" data-rut="assign">ASIGNAR</button><button type="button" class="action-btn" data-rut="edit">EDITAR</button>' +
+          '<button type="button" class="action-btn" data-rut="dup">DUPLICAR</button><button type="button" class="action-btn danger" data-rut="del">BORRAR</button></div></div>';
+      }).join('') + '</div>';
+    }
+    el.innerHTML = html;
+  }
+  $('#rutinas-view').addEventListener('click', async (ev) => {
+    const b = ev.target.closest('[data-rut]');
+    if (!b) return;
+    const act = b.dataset.rut;
+    if (act === 'new') { openTemplate({ id: 'new', nombre: '', descripcion: '', plan: emptyPlan() }); return; }
+    if (act === 'tmc') { openTemplate({ id: 'new', nombre: 'TMC 5 días · Fuerza + Hipertrofia', descripcion: 'Pecho, espalda, movilidad, pierna y hombros', plan: withNewIds(TPL) }); return; }
+    if (act === 'import') { openImport('template'); return; }
+    const r = (S.rutinas || []).find((x) => x.id === b.closest('[data-rid]').dataset.rid);
+    if (!r) return;
+    if (act === 'edit') { openTemplate(r); return; }
+    if (act === 'assign') { openAssign(r); return; }
+    if (act === 'dup') {
+      b.disabled = true;
+      try {
+        await api('PUT', 'rutinas', { nombre: (r.nombre + ' (copia)').slice(0, 60), descripcion: r.descripcion, plan: r.plan });
+        await loadRutinas();
+        toast('Rutina duplicada', 'ti-copy');
+      } catch (e) { toastErr(e); }
+      renderRutinasList();
+      return;
+    }
+    if (act === 'del') {
+      if (!confirmTap(b, '¿BORRAR?')) return;
+      try { await api('DELETE', 'rutinas?id=' + r.id); await loadRutinas(); toast('Rutina borrada'); } catch (e) { toastErr(e); }
+      renderRutinasList();
+    }
+  });
+  function openTemplate(r) {
+    if ((S.pe.dirty || S.ne.dirty) && !window.confirm('Tienes cambios sin guardar. ¿Descartarlos?')) return;
+    const plan = clone(r.plan);
+    if (!plan.consejos || !plan.consejos.length) plan.consejos = clone(TPL.consejos);
+    const isNew = r.id === 'new';
+    S.planKind = 'rutinas';
+    S.pe = {
+      athleteId: '', tplId: r.id, tplName: r.nombre || '', tplDesc: r.descripcion || '', plan, exists: !isNew,
+      dirty: isNew && plan.dias.length > 0, open: plan.dias[0] ? { [plan.dias[0].dow]: true } : {}, loading: false,
+      prevAthlete: S.pe.athleteId || S.pe.prevAthlete || '',
+    };
+    S.pvDow = null;
+    renderPlanView();
+    window.scrollTo(0, 0);
+    if (isNew && !r.nombre) { const i = $('[data-tf="nombre"]'); if (i) i.focus(); }
+  }
+  function closeTemplate() {
+    if (S.pe.dirty && !window.confirm('La rutina tiene cambios sin guardar. ¿Salir sin guardar?')) return;
+    const back = S.pe.prevAthlete || '';
+    S.pe = { athleteId: '', plan: null, exists: false, dirty: false, open: {}, loading: false, prevAthlete: back };
+    renderPlanView();
+  }
+  function tplHeaderHtml() {
+    return '<div class="tpl-head"><button type="button" class="back" data-act="tpl-back"><i class="ti ti-chevron-left" aria-hidden="true"></i>MIS RUTINAS</button>' +
+      '<input class="form-input tpl-name" data-tf="nombre" maxlength="60" value="' + esc(S.pe.tplName) + '" placeholder="Nombre de la rutina (ej: Full body 3 días)" aria-label="Nombre de la rutina">' +
+      '<input class="form-input" data-tf="desc" maxlength="200" value="' + esc(S.pe.tplDesc) + '" placeholder="Para quién es (opcional): principiantes, mujeres, fuerza…" aria-label="Descripción"></div>';
+  }
+  function openAssign(r) {
+    const roster = (S.cstate && S.cstate.roster) || [];
+    if (!roster.length) { toast('Primero agrega clientes', 'ti-alert-triangle', true); return; }
+    const html = '<div class="rut-name" style="margin-bottom:4px;">' + esc(r.nombre) + '</div><div class="rut-meta">' + plural(r.plan.dias.length, 'DÍA', 'DÍAS') + '</div>' +
+      '<div class="btn-row" style="margin-top:12px;"><button type="button" class="btn-ghost btn-sm" data-as="all">TODOS</button><button type="button" class="btn-ghost btn-sm" data-as="none">NINGUNO</button></div>' +
+      '<div class="assign-list">' + roster.map((a) => {
+        const days = hasPlan(a.id) ? maskDays(S.cstate.coach.masks[a.id]) : 0;
+        return '<label class="assign-row"><input type="checkbox" value="' + a.id + '"><span><span class="n" style="display:block;">' + esc(a.name) + '</span>' +
+          '<span class="d' + (days ? ' warn' : '') + '">' + (days ? 'TIENE PLAN DE ' + days + ' DÍAS · SE REEMPLAZA' : 'SIN PLAN') + '</span></span></label>';
+      }).join('') + '</div>' +
+      '<label class="assign-row" style="background:transparent;padding:4px 0;"><input type="checkbox" id="as-keep" checked><span class="d" style="font-size:11px;">MANTENER EL OBJETIVO DE CADA CLIENTE</span></label>' +
+      '<button type="button" class="publish-btn" data-as="go" style="margin-top:10px;"><i class="ti ti-send" aria-hidden="true"></i><span>ASIGNAR</span></button>';
+    openModal('ASIGNAR RUTINA', html, {
+      wide: false,
+      onClick: async (ev) => {
+        const b = ev.target.closest('[data-as]');
+        if (!b) return;
+        const boxes = $$('#modal-body .assign-list input');
+        if (b.dataset.as === 'all' || b.dataset.as === 'none') { boxes.forEach((x) => { x.checked = b.dataset.as === 'all'; }); return; }
+        const ids = boxes.filter((x) => x.checked).map((x) => x.value);
+        if (!ids.length) { toast('Elige al menos un cliente', 'ti-alert-triangle', true); return; }
+        // reemplazar planes que ya existen pide un segundo toque
+        const withPlan = ids.filter((id) => hasPlan(id)).length;
+        if (withPlan && !confirmTap(b, 'REEMPLAZA ' + withPlan + (withPlan === 1 ? ' PLAN' : ' PLANES') + ' · TOCA OTRA VEZ')) return;
+        b.disabled = true;
+        try {
+          let assigned = 0;
+          for (let k = 0; k < ids.length; k += 50) {
+            const res = await api('POST', 'rutinas/asignar', { id: r.id, athleteIds: ids.slice(k, k + 50), date: today(), keepObjetivo: $('#as-keep').checked });
+            assigned += res.assigned || 0;
+          }
+          closeModal();
+          toast('Rutina asignada a ' + plural(assigned, 'cliente', 'clientes') + ' · ya la ven', 'ti-send');
+          if (ids.indexOf(S.pe.athleteId) !== -1 && !S.pe.tplId) loadPlanEditor(S.pe.athleteId);
+          await loadCoachState().catch(() => {});
+          renderCoachView();
+        } catch (e) { b.disabled = false; toastErr(e); }
+      },
+    });
+  }
+  function openSaveAsRutina() {
+    const p = cleanPlanForSave(S.pe.plan);
+    if (!p.dias.length) { toast('Agrega al menos un día con ejercicios', 'ti-alert-triangle', true); return; }
+    const sug = p.dias.map((d) => d.titulo).filter(Boolean).slice(0, 3).join(' / ') || 'Rutina de ' + firstName(cName(S.pe.athleteId));
+    openModal('GUARDAR EN MIS RUTINAS', '<div class="form-field-group"><label class="form-label" for="sr-name">NOMBRE</label><input class="form-input" id="sr-name" maxlength="60" value="' + esc(sug.slice(0, 60)) + '"></div>' +
+      '<div class="form-field-group"><label class="form-label" for="sr-desc">PARA QUIÉN ES (OPCIONAL)</label><input class="form-input" id="sr-desc" maxlength="200" placeholder="Ej: intermedios, 5 días, fuerza"></div>' +
+      '<button type="button" class="publish-btn" data-sr="go"><i class="ti ti-books" aria-hidden="true"></i><span>GUARDAR RUTINA</span></button>', {
+      onClick: async (ev) => {
+        const b = ev.target.closest('[data-sr]');
+        if (!b) return;
+        const nombre = $('#sr-name').value.trim();
+        if (!nombre) { toast('Ponle un nombre', 'ti-alert-triangle', true); return; }
+        b.disabled = true;
+        try {
+          await api('PUT', 'rutinas', { nombre, descripcion: $('#sr-desc').value.trim(), plan: p });
+          await loadRutinas();
+          closeModal();
+          toast('Guardada en Mis rutinas. Ya puedes asignarla a otros clientes.', 'ti-books');
+          renderPlanView();
+        } catch (e) { b.disabled = false; toastErr(e); }
+      },
+    });
+    setTimeout(() => { const i = $('#sr-name'); if (i) i.select(); }, 50);
+  }
+  function useRutina(id) {
+    const r = (S.rutinas || []).find((x) => x.id === id);
+    if (!r || !S.pe.plan) return;
+    const cur = S.pe.plan;
+    const next = clone(r.plan);
+    next.edad = cur.edad || '';
+    next.objetivo = cur.objetivo || next.objetivo || '';
+    if (S.pe.exists && cur.unidad) next.unidad = cur.unidad; // si el cliente ya anota en lb, sigue en lb
+    if (!next.consejos || !next.consejos.length) next.consejos = cur.consejos;
+    S.pe.plan = next;
+    S.pe.open = next.dias[0] ? { [next.dias[0].dow]: true } : {};
+    markDirty();
+    renderPlanView();
+    toast('Rutina "' + r.nombre + '" cargada. Revísala y toca ' + (S.pe.exists ? 'GUARDAR CAMBIOS' : 'PUBLICAR PLAN') + '.', 'ti-books');
+  }
+
+  // ---- importar rutinas (Excel, Google Sheets, texto, PDF o foto)
+  let imp = null;
+  function openImport(target) {
+    imp = { target, result: null, text: '', sheets: null };
+    const sample = '<div class="imp-table-wrap"><table class="imp-table"><tr><th>DÍA</th><th>TÍTULO</th><th>SECCIÓN</th><th>EJERCICIO</th><th>SERIES</th><th>REPS</th><th>DESCANSO</th><th>NOTA</th><th>VIDEO</th><th>ALTERNATIVA</th></tr>' +
+      '<tr><td>LUNES</td><td>PECHO + TRÍCEPS</td><td></td><td>Press de banca con barra</td><td>4</td><td>4–6</td><td>2–3 min</td><td></td><td></td><td>Press con mancuernas</td></tr>' +
+      '<tr><td>LUNES</td><td></td><td></td><td>Press inclinado con mancuernas</td><td>3</td><td>8–10</td><td>90 seg</td><td></td><td></td><td></td></tr>' +
+      '<tr><td>MIÉRCOLES</td><td>MOVILIDAD</td><td>MOVILIDAD ARTICULAR</td><td>Movilidad de hombros</td><td>2</td><td>10–12</td><td>45 seg</td><td></td><td></td><td></td></tr></table></div>';
+    const html = '<div class="seg imp-tabs"><button type="button" data-imp-tab="paste" class="on">PEGAR</button><button type="button" data-imp-tab="file">SUBIR ARCHIVO</button></div>' +
+      '<div data-imp-pane="paste"><p class="imp-help">Copia las filas de Excel o Google Sheets, o el texto de WhatsApp o de tus notas, y pégalo aquí. Cada día empieza con su nombre (LUNES, MARTES… o DÍA 1) y cada ejercicio va en su línea, por ejemplo <b>Press de banca 4x6-8 2 min</b>.</p>' +
+      '<textarea class="form-textarea imp-text" id="imp-text" spellcheck="false" placeholder="LUNES - PECHO + TRÍCEPS&#10;Press de banca con barra 4x4-6 2-3 min&#10;Press inclinado con mancuernas 3x8-10 90 seg&#10;&#10;MARTES - ESPALDA + BÍCEPS&#10;Remo con barra 4x6-10 2 min"></textarea></div>' +
+      '<div data-imp-pane="file" class="hidden"><label class="imp-drop" id="imp-drop" for="imp-file"><i class="ti ti-file-upload" aria-hidden="true"></i><b>Elige o arrastra un archivo</b><span>Excel (.xlsx), CSV, PDF o una foto de la rutina (JPG o PNG)</span></label>' +
+      '<input type="file" id="imp-file" accept=".xlsx,.csv,.tsv,.txt,.pdf,image/*" hidden><div id="imp-sheets"></div>' +
+      '<div id="imp-progress" class="hidden"><div class="imp-bar"><span></span></div><div class="imp-ptext"></div></div>' +
+      '<p class="imp-help" style="margin-top:10px;">Las fotos y los PDF se leen aquí mismo, sin enviarlos a nadie. Después revisas el texto leído antes de convertirlo.</p></div>' +
+      '<details class="imp-format"><summary>¿Cómo organizo mi Excel o Google Sheets?</summary><p>Una fila por ejercicio, con estas columnas. Solo DÍA y EJERCICIO son obligatorias; el orden de las columnas no importa. También sirve una columna por día, como en el plan en imagen.</p>' + sample +
+      '<button type="button" class="btn-ghost btn-sm" data-imp="sample">COPIAR ESTA PLANTILLA</button></details>' +
+      '<button type="button" class="publish-btn" data-imp="convert"><i class="ti ti-wand" aria-hidden="true"></i><span>CONVERTIR EN PLAN</span></button>' +
+      '<div id="imp-result"></div>';
+    openModal(target === 'template' ? 'IMPORTAR RUTINA A MIS RUTINAS' : 'IMPORTAR RUTINA · ' + cName(S.pe.athleteId).toUpperCase(), html, { wide: true, onClick: importClick });
+    const drop = $('#imp-drop');
+    ['dragenter', 'dragover'].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add('over'); }));
+    ['dragleave', 'drop'].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.remove('over'); }));
+    drop.addEventListener('drop', (e) => { const f = e.dataTransfer && e.dataTransfer.files[0]; if (f) importFile(f); });
+    $('#imp-file').addEventListener('change', (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ''; if (f) importFile(f); });
+    $('#imp-text').addEventListener('paste', () => setTimeout(() => { if ($('#imp-text') && $('#imp-text').value.trim()) runConvert(); }, 30));
+    needImport().catch(() => {});
+    setTimeout(() => { const t = $('#imp-text'); if (t) t.focus(); }, 60);
+  }
+  function impTab(tab) {
+    $$('#modal-body [data-imp-tab]').forEach((b) => b.classList.toggle('on', b.dataset.impTab === tab));
+    $$('#modal-body [data-imp-pane]').forEach((p) => p.classList.toggle('hidden', p.dataset.impPane !== tab));
+  }
+  function impProgress(on, frac, text) {
+    const box = $('#imp-progress');
+    if (!box) return;
+    box.classList.toggle('hidden', !on);
+    $('.imp-bar span', box).style.width = Math.round((frac || 0) * 100) + '%';
+    $('.imp-ptext', box).textContent = text || '';
+  }
+  async function importFile(f) {
+    const name = (f.name || '').toLowerCase();
+    const I = await needImport().catch((e) => { toastErr(e); return null; });
+    if (!I || !imp) return;
+    if (f.size > 30 * 1024 * 1024) { toast('El archivo pesa más de 30 MB. Usa una foto o un PDF más liviano.', 'ti-alert-triangle', true); return; }
+    try {
+      if (/\.xlsx$/.test(name)) {
+        impProgress(true, 0.3, 'Abriendo el Excel…');
+        const sheets = await I.readXlsx(f);
+        impProgress(false);
+        if (!sheets.length) { toast('Ese Excel no tiene datos', 'ti-alert-triangle', true); return; }
+        imp.sheets = sheets;
+        $('#imp-sheets').innerHTML = sheets.length > 1 ? '<div class="form-field-group" style="margin-top:12px;"><label class="form-label" for="imp-sheet">HOJA</label><select class="form-select" id="imp-sheet">' +
+          sheets.map((s, i) => '<option value="' + i + '">' + esc(s.name) + '</option>').join('') + '</select></div>' : '';
+        const sel = $('#imp-sheet');
+        if (sel) sel.addEventListener('change', () => showImport(I.parseRows(imp.sheets[+sel.value].rows)));
+        showImport(I.parseRows(sheets[0].rows));
+        return;
+      }
+      if (/\.(csv|tsv|txt)$/.test(name) || /^text\//.test(f.type)) {
+        if (f.size > 2 * 1024 * 1024) { toast('El archivo de texto es demasiado grande para una rutina.', 'ti-alert-triangle', true); return; }
+        const text = I.decodeText(await f.arrayBuffer()); // UTF-8, o el ANSI que guarda Excel en Windows
+        $('#imp-text').value = text;
+        impTab('paste');
+        showImport(/\.csv$/.test(name) ? I.parseCsv(text) : I.parsePasted(text));
+        return;
+      }
+      if (/\.pdf$/.test(name) || f.type === 'application/pdf') {
+        impProgress(true, 0.05, 'Leyendo el PDF…');
+        const text = await I.readPdf(f, (p) => impProgress(true, p, 'Leyendo el PDF… ' + Math.round(p * 100) + '%'));
+        impProgress(false);
+        afterRead(text, 'PDF');
+        return;
+      }
+      if (/^image\//.test(f.type) || /\.(jpe?g|png|webp|heic)$/.test(name)) {
+        impProgress(true, 0.02, 'Preparando la foto…');
+        const text = await I.ocr(f, (p) => impProgress(true, p, 'Leyendo la foto… ' + Math.round(p * 100) + '%'));
+        impProgress(false);
+        afterRead(text, 'foto');
+        return;
+      }
+      toast('Ese tipo de archivo no lo puedo leer. Usa Excel, CSV, PDF o una foto.', 'ti-alert-triangle', true);
+    } catch (e) {
+      impProgress(false);
+      toastErr(e);
+    }
+  }
+  function afterRead(text, what) {
+    if (!imp) return;
+    const t = $('#imp-text');
+    t.value = String(text || '').replace(/\n{3,}/g, '\n\n').trim();
+    impTab('paste');
+    if (!t.value) { toast('No encontré texto en la ' + what + '. Prueba con una foto más nítida.', 'ti-alert-triangle', true); return; }
+    toast('Listo. Revisa el texto leído de la ' + what + ' y corrige lo que haga falta.', 'ti-scan');
+    runConvert();
+  }
+  async function runConvert() {
+    const I = await needImport().catch((e) => { toastErr(e); return null; });
+    if (!I || !imp) return;
+    const text = ($('#imp-text') || {}).value || '';
+    if (!text.trim()) { toast('Pega la rutina o sube un archivo', 'ti-alert-triangle', true); return; }
+    showImport(I.parsePasted(text));
+  }
+  function importedPlan(result) {
+    const p = clone(result.plan);
+    p.dias.forEach((d) => {
+      ['titulo', 'subtitulo', 'duracion', 'rpe', 'nota'].forEach((k) => { d[k] = d[k] || ''; });
+      if (!d.duracion) d.duracion = '';
+      d.secciones.forEach((s) => s.ejercicios.forEach((e) => { e.id = rid(); }));
+    });
+    return p;
+  }
+  function showImport(result) {
+    if (!imp) return;
+    imp.result = result;
+    const el = $('#imp-result');
+    if (!el) return;
+    const st = result.stats;
+    let html = '<div class="imp-sum"><b>' + plural(st.dias, 'día', 'días') + ' · ' + plural(st.exercises, 'ejercicio', 'ejercicios') + '</b>' +
+      (st.sinSeries ? '<span class="pill pill-soon">' + st.sinSeries + ' SIN SERIES NI REPS</span>' : '') + '</div>';
+    if (result.warnings.length) {
+      html += '<details class="imp-warn"' + (st.dias ? '' : ' open') + '><summary>' + plural(result.warnings.length, 'línea para revisar', 'líneas para revisar') + '</summary><ul>' +
+        result.warnings.map((w) => '<li>' + esc(w) + '</li>').join('') + '</ul></details>';
+    }
+    if (st.dias) {
+      html += '<div class="imp-days">' + result.plan.dias.map((d) => '<div class="imp-day"><div class="t">' + DIAS[d.dow] + '</div><div class="h">' + esc(d.titulo || 'SIN TÍTULO') + '</div>' +
+        d.secciones.map((s) => (s.titulo ? '<div class="s">' + esc(s.titulo) + (s.nota ? ' · ' + esc(s.nota) : '') + '</div>' : '') + '<ol>' +
+          s.ejercicios.map((e) => '<li class="' + (e.series || e.reps ? '' : 'weak') + '">' + esc(e.nombre) + ' <em>' + esc([e.series && e.reps ? e.series + '×' + e.reps : e.reps || (e.series ? e.series + ' series' : 'sin series'), e.descanso].filter(Boolean).join(' · ')) + '</em></li>').join('') + '</ol>').join('') + '</div>').join('') + '</div>';
+      if (imp.target === 'template') {
+        const sug = result.plan.dias.map((d) => d.titulo).filter(Boolean).slice(0, 3).join(' / ');
+        html += '<div class="form-field-group"><label class="form-label" for="imp-name">NOMBRE DE LA RUTINA</label><input class="form-input" id="imp-name" maxlength="60" value="' + esc(sug.slice(0, 60)) + '" placeholder="Ej: Full body 3 días"></div>' +
+          '<div class="imp-actions"><button type="button" class="publish-btn" data-imp="tpl"><i class="ti ti-books" aria-hidden="true"></i><span>CREAR RUTINA Y REVISARLA</span></button></div>';
+      } else {
+        const has = S.pe.plan && S.pe.plan.dias.length;
+        html += '<div class="imp-actions"><button type="button" class="publish-btn" data-imp="replace"><i class="ti ti-replace" aria-hidden="true"></i><span>' + (has ? 'REEMPLAZAR TODO EL PLAN' : 'USAR ESTE PLAN') + '</span></button>' +
+          (has ? '<button type="button" class="btn-outline" data-imp="merge"><i class="ti ti-arrow-merge" aria-hidden="true"></i> SOLO ESTOS DÍAS (DEJA LOS DEMÁS)</button>' : '') + '</div>';
+      }
+      html += '<p class="imp-help" style="margin-top:10px;">Después lo ves en el editor para ajustar lo que haga falta antes de publicarlo.</p>';
+    }
+    el.innerHTML = html;
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  function importClick(ev) {
+    const tab = ev.target.closest('[data-imp-tab]');
+    if (tab) { impTab(tab.dataset.impTab); return; }
+    const b = ev.target.closest('[data-imp]');
+    if (!b || !imp) return;
+    const act = b.dataset.imp;
+    if (act === 'convert') { runConvert(); return; }
+    if (act === 'sample') {
+      needImport().then((I) => {
+        try { navigator.clipboard.writeText(I.sampleTsv).then(() => toast('Plantilla copiada: pégala en la celda A1 de tu hoja', 'ti-clipboard-check'), () => toast('No se pudo copiar. Selecciona la tabla y cópiala.', 'ti-alert-triangle', true)); }
+        catch (e) { toast('No se pudo copiar. Selecciona la tabla y cópiala.', 'ti-alert-triangle', true); }
+      });
+      return;
+    }
+    const res = imp.result;
+    if (!res || !res.stats.dias) return;
+    const p = importedPlan(res);
+    if (act === 'tpl') {
+      const nombre = ($('#imp-name') || {}).value || '';
+      p.consejos = p.consejos && p.consejos.length ? p.consejos : clone(TPL.consejos);
+      ['enfoque', 'frecuencia', 'nivel', 'objetivo', 'edad', 'unidad'].forEach((k) => { if (!p[k]) delete p[k]; });
+      closeModal();
+      imp = null;
+      openTemplate({ id: 'new', nombre: nombre.trim(), descripcion: '', plan: Object.assign(emptyPlan(), p) });
+      toast('Rutina importada. Revísala y toca GUARDAR RUTINA.', 'ti-books');
+      return;
+    }
+    if (!S.pe.plan) return;
+    const cur = S.pe.plan;
+    if (act === 'replace') {
+      const next = Object.assign(emptyPlan(), p);
+      ['enfoque', 'frecuencia', 'nivel', 'objetivo', 'unidad'].forEach((k) => { if (!p[k]) next[k] = cur[k] || next[k]; });
+      next.edad = p.edad || cur.edad || '';
+      next.consejos = p.consejos && p.consejos.length ? p.consejos : cur.consejos;
+      S.pe.plan = next;
+    } else {
+      p.dias.forEach((d) => {
+        const i = cur.dias.findIndex((x) => x.dow === d.dow);
+        if (i === -1) cur.dias.push(d); else cur.dias[i] = d;
+      });
+      cur.dias.sort((a, b) => a.dow - b.dow);
+    }
+    S.pe.open = p.dias[0] ? { [p.dias[0].dow]: true } : {};
+    S.pvDow = p.dias[0] ? p.dias[0].dow : null;
+    closeModal();
+    imp = null;
+    markDirty();
+    renderPlanView();
+    toast('Rutina importada. Revisa y toca ' + (S.pe.tplId ? 'GUARDAR RUTINA' : S.pe.exists ? 'GUARDAR CAMBIOS' : 'PUBLICAR PLAN') + '.', 'ti-file-import');
+  }
+
+  // ---- atajos de teclado del editor
+  planEditor.addEventListener('keydown', (ev) => {
+    const t = ev.target;
+    // solo en el computador: en el celular la tecla de retorno sigue sin hacer nada
+    if (ev.key !== 'Enter' || ev.isComposing || !isDesk() || !t.dataset || !t.dataset.ef || t.tagName === 'TEXTAREA') return;
+    ev.preventDefault();
+    const pex = t.closest('.pex');
+    const next = pex && pex.nextElementSibling && pex.nextElementSibling.classList.contains('pex') ? pex.nextElementSibling : null;
+    if (next) { $('[data-ef="nombre"]', next).focus(); return; }
+    const add = pex && pex.parentElement && $(':scope > [data-act="pe-ex-add"]', pex.parentElement);
+    if (add) add.click();
+  });
+  document.addEventListener('keydown', (ev) => {
+    if (!(ev.metaKey || ev.ctrlKey) || (ev.key !== 's' && ev.key !== 'S')) return;
+    if (S.role !== 'coach' || S.cview !== 'plan' || !coach.classList.contains('active')) return;
+    ev.preventDefault(); // nunca el "guardar página" del navegador en Planes
+    if (!modal.classList.contains('hidden')) return;
+    // solo el editor que está a la vista: nunca un plan escondido detrás de Mis rutinas
+    const ed = S.planKind === 'nutri' ? $('#nutri-editor') : $('#plan-editor');
+    if (!ed || ed.classList.contains('hidden')) return;
+    if (S.planKind === 'rutinas' && !S.pe.tplId) return;
+    const btn = $(S.planKind === 'nutri' ? '[data-act="ne-save"]' : '[data-act="pe-save"]', ed);
+    if (btn && !btn.disabled && btn.offsetParent !== null) btn.click();
   });
 
   /* ================================================================ arranque */

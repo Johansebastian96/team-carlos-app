@@ -1291,6 +1291,172 @@
   .note-row .who{ font-size:12px; font-weight:900; text-transform:uppercase; }
   .note-row .meta{ font-size:9px; font-weight:800; color:var(--w4); text-transform:uppercase; margin-top:2px; }
   .note-row .txt{ font-size:13px; color:var(--w2); font-family:var(--font-body); margin-top:6px; line-height:1.45; }
+
+  /* ================= v4 · coach: importador, Mis rutinas, tabla y escritorio ================= */
+  .desk-only{ display:none !important; }
+  .modal-card.wide{ max-width:980px; }
+  .plan-tools .tool-wide{ grid-column:1 / -1; }
+  .tpl-head{ background:var(--bg1); border-radius:8px; border-top:2px solid var(--accent); padding:14px 16px; margin-bottom:14px; display:grid; gap:10px; }
+  .tpl-head .back{ background:none; border:none; color:var(--w3); font-size:11px; font-weight:800; letter-spacing:1px; text-transform:uppercase; display:inline-flex; align-items:center; gap:6px; padding:0; justify-self:start; }
+  .tpl-head .form-input{ font-size:15px; }
+  .tpl-head .tpl-name{ font-family:var(--font-display); font-weight:900; text-transform:uppercase; font-size:18px; }
+  .rut-tools{ display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:8px; margin-bottom:16px; }
+  .rut-grid{ display:grid; grid-template-columns:repeat(auto-fill, minmax(260px, 1fr)); gap:12px; }
+  .rut-card{ background:var(--bg1); border:1px solid var(--border); border-radius:10px; padding:16px; display:grid; gap:10px; align-content:start; min-width:0; }
+  .rut-name{ font-size:15px; font-weight:900; text-transform:uppercase; line-height:1.2; }
+  .rut-desc{ font-size:12px; color:var(--w3); font-family:var(--font-body); }
+  .rut-days{ display:flex; gap:4px; }
+  .rut-days span{ width:24px; height:24px; border-radius:6px; background:var(--bg3); color:var(--w4); font-size:10px; font-weight:900; display:flex; align-items:center; justify-content:center; }
+  .rut-days span.on{ background:rgba(57,255,20,0.14); color:var(--accent); }
+  .rut-meta{ font-size:10px; font-weight:800; color:var(--w4); text-transform:uppercase; letter-spacing:0.5px; }
+  .rut-actions{ display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); gap:6px; }
+  .rut-actions button{ font-size:9px; padding:9px 4px; }
+  .assign-list{ display:grid; gap:6px; max-height:46vh; overflow:auto; margin:10px 0; }
+  .assign-row{ display:grid; grid-template-columns:22px minmax(0,1fr); gap:10px; align-items:center; background:var(--bg2); border-radius:8px; padding:10px 12px; cursor:pointer; }
+  .assign-row input{ width:18px; height:18px; accent-color:var(--accent); }
+  .assign-row .n{ font-size:13px; font-weight:800; }
+  .assign-row .d{ font-size:10px; color:var(--w4); font-weight:700; text-transform:uppercase; }
+  .assign-row .d.warn{ color:var(--gold2); }
+  /* importador */
+  .imp-tabs{ margin-bottom:12px; }
+  .imp-help{ font-size:12px; color:var(--w3); font-family:var(--font-body); margin-bottom:8px; line-height:1.5; }
+  .imp-text{ min-height:200px; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; line-height:1.5; }
+  .imp-drop{ display:flex; flex-direction:column; align-items:center; gap:6px; border:1.5px dashed var(--border-accent); border-radius:10px; padding:26px 12px; cursor:pointer; text-align:center; background:rgba(57,255,20,0.04); }
+  .imp-drop i{ font-size:30px; color:var(--accent); }
+  .imp-drop b{ font-size:13px; text-transform:uppercase; }
+  .imp-drop span{ font-size:11px; color:var(--w3); font-family:var(--font-body); }
+  .imp-drop.over{ background:rgba(57,255,20,0.1); }
+  .imp-bar{ height:6px; background:var(--bg3); border-radius:6px; overflow:hidden; margin-top:12px; }
+  .imp-bar span{ display:block; height:100%; width:0; background:var(--accent); transition:width 0.2s; }
+  .imp-ptext{ font-size:11px; color:var(--w3); margin-top:6px; text-transform:uppercase; font-weight:800; }
+  .imp-format{ margin:12px 0; background:var(--bg2); border-radius:8px; padding:10px 12px; }
+  .imp-format summary{ cursor:pointer; font-size:11px; font-weight:900; text-transform:uppercase; color:var(--accent); }
+  .imp-format p{ font-size:12px; color:var(--w3); font-family:var(--font-body); margin:8px 0; line-height:1.5; }
+  .imp-table-wrap{ overflow-x:auto; margin:8px 0; }
+  .imp-table{ border-collapse:collapse; font-size:10px; white-space:nowrap; }
+  .imp-table th, .imp-table td{ border:0.5px solid var(--border); padding:5px 7px; text-align:left; }
+  .imp-table th{ color:var(--accent); font-weight:900; }
+  .imp-sum{ display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:14px 0 10px; }
+  .imp-sum b{ font-size:15px; font-weight:900; text-transform:uppercase; }
+  .imp-warn{ background:rgba(212,168,67,0.08); border:1px solid rgba(212,168,67,0.3); border-radius:8px; padding:10px 12px; font-size:11px; color:var(--gold2); font-family:var(--font-body); margin-bottom:10px; }
+  .imp-warn summary{ cursor:pointer; font-weight:800; font-family:var(--font-display); text-transform:uppercase; }
+  .imp-warn li{ margin:4px 0 0 16px; }
+  .imp-days{ display:grid; grid-template-columns:repeat(auto-fill, minmax(230px, 1fr)); gap:8px; margin-bottom:12px; }
+  .imp-day{ background:var(--bg2); border-radius:8px; padding:12px; min-width:0; }
+  .imp-day .t{ font-size:10px; font-weight:900; color:var(--accent); letter-spacing:1px; }
+  .imp-day .h{ font-size:13px; font-weight:900; text-transform:uppercase; margin:2px 0 8px; }
+  .imp-day .s{ font-size:9px; font-weight:900; color:var(--w4); letter-spacing:1px; text-transform:uppercase; margin:8px 0 4px; }
+  .imp-day ol{ margin:0; padding-left:18px; display:grid; gap:4px; }
+  .imp-day li{ font-size:12px; font-family:var(--font-body); color:var(--w2); }
+  .imp-day li em{ font-style:normal; color:var(--w4); font-size:11px; }
+  .imp-day li.weak em{ color:var(--gold2); }
+  .imp-actions{ display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:8px; }
+  .imp-actions > button{ margin:0; }
+  /* tabla de clientes */
+  .ct-bar{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:6px 0 12px; }
+  .ct-bar .form-input{ flex:1; min-width:180px; }
+  .ct-count{ font-size:11px; font-weight:800; color:var(--w4); text-transform:uppercase; }
+  .ct-wrap{ overflow-x:auto; border:1px solid var(--border); border-radius:10px; }
+  .ct{ width:100%; border-collapse:collapse; font-size:12px; min-width:820px; }
+  .ct th{ text-align:left; font-size:9px; font-weight:900; letter-spacing:1px; text-transform:uppercase; color:var(--w4); padding:10px 8px; border-bottom:1px solid var(--border); background:var(--bg1); white-space:nowrap; position:sticky; top:0; }
+  .ct th[data-sort]{ cursor:pointer; }
+  .ct th[data-sort]:hover, .ct th.sorted{ color:var(--accent); }
+  .ct td{ padding:6px 8px; border-bottom:0.5px solid var(--border); vertical-align:middle; white-space:nowrap; font-weight:700; }
+  .ct tr:hover td{ background:rgba(255,255,255,0.02); }
+  .ct-in{ background:transparent; border:1px solid transparent; border-radius:6px; color:var(--white); font-family:var(--font-display); font-weight:700; font-size:12px; padding:7px 8px; width:100%; min-width:0; }
+  .ct-in:hover{ border-color:var(--border); }
+  .ct-in:focus{ outline:none; border-color:var(--accent); background:var(--bg2); }
+  .ct-name{ min-width:150px; font-weight:900; }
+  .ct-who{ display:flex; gap:6px; align-items:center; }
+  .ct-money{ width:96px; text-align:right; font-variant-numeric:tabular-nums; }
+  .ct-date{ width:132px; }
+  .ct-g, .ct-link{ background:var(--bg2); border:1px solid var(--border); color:var(--white); border-radius:6px; font-size:10px; font-weight:900; padding:6px 9px; text-transform:uppercase; letter-spacing:0.5px; }
+  .ct-link.on{ color:var(--accent); border-color:var(--border-accent); background:rgba(57,255,20,0.06); }
+  .ct-link.off{ color:var(--gold2); }
+  .ct-num{ text-align:right; font-variant-numeric:tabular-nums; }
+  .ct-actions{ display:flex; gap:4px; }
+  .ct-actions button{ width:30px; height:30px; border-radius:6px; background:var(--bg2); border:1px solid var(--border); color:var(--w2); font-size:14px; display:flex; align-items:center; justify-content:center; }
+  .ct-actions button.danger{ color:var(--danger); }
+  .ct-actions button.confirming{ background:var(--danger); color:#fff; }
+  .ct-pin{ display:flex; gap:4px; align-items:center; }
+  .ct-pin input{ width:60px; }
+  .ct-actions .ct-g{ width:auto; height:30px; }
+  .muted{ color:var(--w4); }
+  /* vista previa del cliente */
+  .pv-head{ font-size:10px; font-weight:900; letter-spacing:1.5px; text-transform:uppercase; color:var(--w4); margin-bottom:8px; display:flex; justify-content:space-between; gap:8px; }
+  .pv-phone{ border:1px solid var(--border); border-radius:28px; background:var(--bg0); padding:14px 12px 18px; box-shadow:0 20px 50px -30px rgba(57,255,20,0.35); }
+  .pv-days{ display:grid; grid-template-columns:repeat(7, minmax(0,1fr)); gap:4px; margin-bottom:12px; }
+  .pv-days button{ background:var(--bg1); border:1px solid transparent; color:var(--w4); border-radius:8px; padding:7px 0; font-size:11px; font-weight:900; }
+  .pv-days button.has{ color:var(--white); }
+  .pv-days button.on{ background:var(--accent); color:var(--on-accent); }
+  .pv-phone .day-head{ margin-bottom:10px; }
+  .pv-phone .ex-item .ex-head{ cursor:default; }
+  .pv-empty{ font-size:12px; color:var(--w4); font-family:var(--font-body); text-align:center; padding:30px 10px; }
+
+  @media (min-width:1100px){
+    .desk-only{ display:revert !important; }
+    .desk-hide{ display:none !important; }
+    #coach-panel{ padding-left:236px; }
+    body.has-nav #coach-panel{ padding-bottom:48px; }
+    body.coach-on #nl-badge-frame{ bottom:16px !important; }
+    #coach-bottom-nav{ top:0; bottom:0; right:auto; width:236px; flex-direction:column; justify-content:flex-start; gap:4px; padding:22px 14px calc(22px + env(safe-area-inset-bottom, 0px)); border-top:none; border-right:0.5px solid var(--border); }
+    #coach-bottom-nav .nav-brand{ display:flex !important; flex-direction:column; gap:8px; padding:8px 12px 26px; }
+    #coach-bottom-nav .nav-brand img{ height:26px; width:auto; align-self:flex-start; }
+    #coach-bottom-nav .nav-brand span{ font-size:9px; font-weight:900; letter-spacing:2px; color:var(--w4); }
+    #coach-bottom-nav .nav-item{ flex:0 0 auto; flex-direction:row; justify-content:flex-start; gap:12px; padding:12px 14px; border-radius:10px; }
+    #coach-bottom-nav .nav-item span{ font-size:11px; letter-spacing:1.5px; }
+    #coach-bottom-nav .nav-item:hover{ background:var(--bg1); color:var(--white); }
+    #coach-bottom-nav .nav-item.active{ background:rgba(57,255,20,0.08); color:var(--accent); }
+    #coach-panel .coach-topbar .hero-logo{ visibility:hidden; }
+    #coach-panel .coach-topbar{ padding:18px 32px 0; }
+    #coach-panel main.view{ width:100%; max-width:1560px; margin:0 auto; padding:0 12px; }
+    #coach-panel .section-heading-coach{ font-size:40px; padding:6px 20px 22px; }
+    #coach-stats{ grid-template-columns:repeat(4, minmax(0,1fr)); }
+    .dash-cols{ display:grid; grid-template-columns:minmax(0,1.35fr) minmax(0,1fr); gap:8px; align-items:start; }
+    .plan-layout{ display:grid; grid-template-columns:minmax(0,1fr) 340px; gap:24px; align-items:start; }
+    .plan-side, .plan-preview{ position:sticky; top:16px; max-height:calc(100vh - 32px); overflow:auto; }
+    .plan-side{ display:none !important; flex-direction:column; gap:10px; }
+    .ps-rutinas{ display:flex; align-items:center; gap:10px; background:var(--bg1); border:1px solid var(--border-accent); color:var(--accent); border-radius:10px; padding:12px 14px; font-size:11px; font-weight:900; letter-spacing:1px; }
+    .ps-rutinas.on{ background:var(--accent); color:var(--on-accent); }
+    .ps-list{ display:grid; gap:4px; }
+    .ps-item{ display:grid; grid-template-columns:34px minmax(0,1fr); gap:10px; align-items:center; background:transparent; border:1px solid transparent; border-radius:10px; padding:8px 10px; color:var(--white); text-align:left; }
+    .ps-item:hover{ background:var(--bg1); }
+    .ps-item.on{ background:var(--bg1); border-color:var(--border-accent); }
+    .ps-item .who-avatar{ width:34px; height:34px; font-size:11px; }
+    .ps-item .n{ font-size:12px; font-weight:900; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .ps-item .d{ font-size:9px; font-weight:800; color:var(--w4); text-transform:uppercase; letter-spacing:0.5px; }
+    .ps-item .d .ok{ color:var(--accent); }
+    .plan-preview{ display:block !important; }
+    .plan-tools{ grid-template-columns:repeat(4, minmax(0,1fr)); }
+    .client-add{ display:grid; grid-template-columns:minmax(0,1fr) 320px 220px; align-items:center; column-gap:10px; row-gap:8px; }
+    .client-add .who-card-title, .client-add .form-error{ grid-column:1 / -1; }
+    .client-add .form-error{ grid-row:3; min-height:0; }
+    .client-add .form-error:empty{ display:none; }
+    .rut-tools{ grid-template-columns:repeat(3, minmax(0, 220px)); }
+    #coach-view-pagos .page-pad, #coach-view-seguimiento .page-pad{ max-width:980px; }
+    .modal{ align-items:center; }
+  }
+  @media (min-width:1500px){
+    .plan-layout{ grid-template-columns:230px minmax(0,1fr) 360px; }
+    .plan-side{ display:flex !important; }
+  }
+  /* Editor de planes: la fila de cada ejercicio se acomoda al ancho real del editor */
+  #plan-editor{ container:pe / inline-size; }
+  @container pe (min-width:600px){
+    #plan-editor .pex{ display:grid; grid-template-columns:minmax(0,1fr) 280px; column-gap:12px; align-items:end; padding:10px 12px; }
+    #plan-editor .pex-grid{ margin-top:0; }
+    #plan-editor .pex-extra, #plan-editor .pex-foot{ grid-column:1 / -1; }
+  }
+  @container pe (min-width:980px){
+    #plan-editor .pex{ grid-template-columns:minmax(0,1fr) 280px auto; }
+    #plan-editor .pex-foot{ grid-column:3; grid-row:1; margin-top:0; }
+    #plan-editor .pex-extra{ grid-row:2; }
+  }
+  /* Tabla de clientes: oculta columnas de solo lectura cuando no hay espacio */
+  .ct-wrap{ container:ct / inline-size; }
+  @container ct (max-width:1150px){ .ct .c-streak, .ct .c-points{ display:none; } }
+  @container ct (max-width:960px){ .ct .c-last, .ct .c-ci{ display:none; } }
+  input[type="date"]{ color-scheme:dark; }
   /* Distintivo de Netlify (plan gratis): se mantiene visible, pero encima del menú para no tapar botones */
   .check-list li > button{ all:unset; display:flex; align-items:center; gap:10px; width:100%; cursor:pointer; }
   .check-list li > button:focus-visible{ outline:2px solid var(--accent); outline-offset:3px; border-radius:4px; }
@@ -1585,13 +1751,19 @@
   <main class="view screen active on" id="coach-view-dashboard">
     <div class="section-heading-coach"><span class="accent">D</span>ASHBOARD</div>
     <div class="stat-grid-2x2" id="coach-stats"></div>
-    <div id="coach-today"></div>
-    <div id="coach-alerts"></div>
-    <div class="section-title-podio coach-section-title" style="padding:0 20px;">ENTRENAMIENTOS DE HOY</div>
-    <div id="coach-today-list"></div>
-    <div id="coach-reto"></div>
-    <div id="coach-noplan"></div>
-    <div id="coach-push"></div>
+    <div class="dash-cols">
+      <div class="dash-main">
+        <div id="coach-today"></div>
+        <div id="coach-alerts"></div>
+        <div class="section-title-podio coach-section-title" style="padding:0 20px;">ENTRENAMIENTOS DE HOY</div>
+        <div id="coach-today-list"></div>
+        <div id="coach-noplan"></div>
+      </div>
+      <div class="dash-side">
+        <div id="coach-reto"></div>
+        <div id="coach-push"></div>
+      </div>
+    </div>
   </main>
 
   <main class="view screen" id="coach-view-clientes">
@@ -1616,17 +1788,23 @@
 
   <main class="view screen" id="coach-view-plan">
     <div class="section-heading-coach"><span class="accent">P</span>LANES</div>
-    <div class="page-pad">
-      <div class="form-field-group">
-        <label class="form-label" for="plan-client">CLIENTE</label>
-        <select class="form-select" id="plan-client"></select>
+    <div class="page-pad plan-layout">
+      <aside class="plan-side desk-only" id="plan-side" aria-label="Clientes"></aside>
+      <div class="plan-main">
+        <div class="form-field-group" id="plan-client-field">
+          <label class="form-label" for="plan-client">CLIENTE</label>
+          <select class="form-select" id="plan-client"></select>
+        </div>
+        <div class="seg" id="plan-kind" style="margin-bottom:16px;">
+          <button type="button" data-v="entreno" class="on">ENTRENO</button>
+          <button type="button" data-v="nutri">NUTRICIÓN</button>
+          <button type="button" data-v="rutinas">MIS RUTINAS</button>
+        </div>
+        <div id="plan-editor"></div>
+        <div id="nutri-editor" class="hidden"></div>
+        <div id="rutinas-view" class="hidden"></div>
       </div>
-      <div class="seg" id="plan-kind" style="margin-bottom:16px;">
-        <button type="button" data-v="entreno" class="on">ENTRENO</button>
-        <button type="button" data-v="nutri">NUTRICIÓN</button>
-      </div>
-      <div id="plan-editor"></div>
-      <div id="nutri-editor" class="hidden"></div>
+      <aside class="plan-preview desk-only" id="plan-preview" aria-label="Vista del cliente"></aside>
     </div>
   </main>
 
@@ -1663,6 +1841,7 @@
   </main>
 
   <nav class="bottom-nav" id="coach-bottom-nav">
+    <div class="nav-brand desk-only"><img src="./assets/logo-mark.png" alt="TMC"><span>PANEL DEL COACH</span></div>
     <button class="nav-item active" data-coach-view="dashboard"><i class="ti ti-home" aria-hidden="true"></i><span>Dashboard</span></button>
     <button class="nav-item" data-coach-view="clientes"><i class="ti ti-users" aria-hidden="true"></i><span>Clientes</span></button>
     <button class="nav-item" data-coach-view="plan"><i class="ti ti-clipboard-list" aria-hidden="true"></i><span>Planes</span></button>
@@ -1671,6 +1850,6 @@
   </nav>
 </div>
 
-<script src="./app.js?v=774f6b59d7"></script>
+<script src="./app.js?v=1a1a52b76c"></script>
 </body>
 </html>
